@@ -598,7 +598,6 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_handler))
 
     print("♟️ Chess Trainer Bot запущено!")
-    app.run_polling(drop_pending_updates=True)
-
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 if __name__ == "__main__":
     main()
