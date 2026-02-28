@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: chess-trainer-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python chess_trainer_bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: TRAINER_ID
+        sync: false
