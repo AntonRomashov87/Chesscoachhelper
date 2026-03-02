@@ -1,13 +1,13 @@
 """
-♟️ Chess Trainer Bot v2 — Telegram-бот для тренера шахової школи
-Нове: відвідуваність, перегляд розкладу батьками, автонагадування про заняття
-Залежності: pip install python-telegram-bot==20.7
+♟️ Chess Trainer Bot v3 — Telegram-бот для тренера шахової школи
+Нове: MongoDB Atlas для постійного зберігання даних
+Залежності: pip install python-telegram-bot[job-queue]==20.7 pymongo[srv]==4.7.0
 """
 
 import logging
-import json
 import os
-from datetime import datetime, time
+from datetime import datetime
+from pymongo import MongoClient
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -17,8 +17,9 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 # НАЛАШТУВАННЯ
 # ─────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-TRAINER_ID = int(os.environ.get("TRAINER_ID"))
+BOT_TOKEN   = os.environ.get("BOT_TOKEN")
+TRAINER_ID  = int(os.environ.get("TRAINER_ID"))
+MONGODB_URI = os.environ.get("MONGODB_URI")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -38,29 +39,103 @@ logger = logging.getLogger(__name__)
 ) = range(17)
 
 # ─────────────────────────────────────────────
-# БАЗА ДАНИХ
+# MONGODB — підключення та helpers
 # ─────────────────────────────────────────────
-DB_FILE = "chess_bot_data.json"
+mongo_client = MongoClient(MONGODB_URI)
+mdb = mongo_client["chess_trainer"]
 
-def load_db() -> dict:
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {
-        "students": [],
-        "schedule": [],
-        "homework": [],
-        "news": [],
-        "materials": [],
-        "parents": {},        # {parent_id: {"name": str, "student": str}}
-        "attendance": {},     # {"YYYY-MM-DD_group": {"present": [], "absent": []}}
-    }
+def col(name):
+    return mdb[name]
 
-def save_db(data: dict):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# ── Учні ──
+def db_get_students() -> list:
+    return list(col("students").find({}, {"_id": 0}))
 
-db = load_db()
+def db_add_student(student: dict):
+    col("students").insert_one(student)
+
+def db_delete_student(idx: int):
+    items = db_get_students()
+    if 0 <= idx < len(items):
+        col("students").delete_one({"name": items[idx]["name"]})
+
+# ── Розклад ──
+def db_get_schedule() -> list:
+    return list(col("schedule").find({}, {"_id": 0}))
+
+def db_add_schedule(entry: dict):
+    col("schedule").insert_one(entry)
+
+def db_delete_schedule(idx: int):
+    items = db_get_schedule()
+    if 0 <= idx < len(items):
+        col("schedule").delete_one(items[idx])
+
+# ── Домашні завдання ──
+def db_get_homework() -> list:
+    return list(col("homework").find({}, {"_id": 0}))
+
+def db_add_homework(hw: dict):
+    col("homework").insert_one(hw)
+
+def db_delete_homework(idx: int):
+    items = db_get_homework()
+    if 0 <= idx < len(items):
+        col("homework").delete_one(items[idx])
+
+# ── Новини ──
+def db_get_news() -> list:
+    return list(col("news").find({}, {"_id": 0}))
+
+def db_add_news(item: dict):
+    col("news").insert_one(item)
+
+def db_delete_news(idx: int):
+    items = db_get_news()
+    if 0 <= idx < len(items):
+        col("news").delete_one(items[idx])
+
+# ── Матеріали ──
+def db_get_materials() -> list:
+    return list(col("materials").find({}, {"_id": 0}))
+
+def db_add_material(mat: dict):
+    col("materials").insert_one(mat)
+
+def db_delete_material(idx: int):
+    items = db_get_materials()
+    if 0 <= idx < len(items):
+        col("materials").delete_one(items[idx])
+
+# ── Батьки ──
+def db_get_parents() -> dict:
+    """Повертає словник {pid: {"name": str, "student": str}}"""
+    result = {}
+    for p in col("parents").find({}, {"_id": 0}):
+        result[p["pid"]] = {"name": p["name"], "student": p.get("student", "")}
+    return result
+
+def db_upsert_parent(pid: str, name: str, student: str = ""):
+    col("parents").update_one(
+        {"pid": pid},
+        {"$set": {"pid": pid, "name": name, "student": student}},
+        upsert=True
+    )
+
+def db_link_parent_to_student(pid: str, student_name: str):
+    col("parents").update_one({"pid": pid}, {"$set": {"student": student_name}})
+
+# ── Відвідуваність ──
+def db_get_attendance() -> dict:
+    """Повертає словник {key: record}"""
+    result = {}
+    for a in col("attendance").find({}, {"_id": 0}):
+        result[a["key"]] = a
+    return result
+
+def db_save_attendance(key: str, record: dict):
+    record["key"] = key
+    col("attendance").update_one({"key": key}, {"$set": record}, upsert=True)
 
 # ─────────────────────────────────────────────
 # КЛАВІАТУРИ — ТРЕНЕР
@@ -135,7 +210,7 @@ def is_trainer(update: Update) -> bool:
     return update.effective_user.id == TRAINER_ID
 
 def is_parent(update: Update) -> bool:
-    return str(update.effective_user.id) in db["parents"]
+    return str(update.effective_user.id) in db_get_parents()
 
 # ─────────────────────────────────────────────
 # АВТОНАГАДУВАННЯ
@@ -149,7 +224,7 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
     current_hour = now.hour
     current_minute = now.minute
 
-    for lesson in db["schedule"]:
+    for lesson in db_get_schedule():
         day_num = DAYS_UA_TO_NUM.get(lesson.get("day"), -1)
         if day_num != today_weekday:
             continue
@@ -175,7 +250,7 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
                 f"Не забудьте! ♟️"
             )
             sent = 0
-            for pid in db["parents"]:
+            for pid in db_get_parents():
                 try:
                     await context.bot.send_message(chat_id=int(pid), text=msg)
                     sent += 1
@@ -199,9 +274,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MAIN_MENU
 
     # Батько/мати — реєструємо
-    if str(user.id) not in db["parents"]:
-        db["parents"][str(user.id)] = {"name": user.full_name, "student": ""}
-        save_db(db)
+    parents = db_get_parents()
+    if str(user.id) not in parents:
+        db_upsert_parent(str(user.id), user.full_name, "")
 
     await update.message.reply_text(
         f"👋 Вітаємо, {user.first_name}!\n\n"
@@ -224,11 +299,12 @@ async def parent_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = str(update.effective_user.id)
 
     if text == "📅 Розклад занять":
-        if not db["schedule"]:
+        schedule = db_get_schedule()
+        if not schedule:
             await update.message.reply_text("📭 Розклад ще не додано.", reply_markup=parent_keyboard())
         else:
             days_order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-            sorted_schedule = sorted(db["schedule"],
+            sorted_schedule = sorted(schedule,
                 key=lambda x: days_order.index(x["day"]) if x["day"] in days_order else 9)
             msg = "📅 Розклад занять:\n\n"
             for s in sorted_schedule:
@@ -236,17 +312,19 @@ async def parent_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(msg, reply_markup=parent_keyboard())
 
     elif text == "📚 Домашні завдання":
-        if not db["homework"]:
+        homework = db_get_homework()
+        if not homework:
             await update.message.reply_text("📭 Домашніх завдань немає.", reply_markup=parent_keyboard())
         else:
             msg = "📚 Актуальні домашні завдання:\n\n"
-            for i, h in enumerate(db["homework"], 1):
+            for i, h in enumerate(homework, 1):
                 msg += f"{i}. [{h['group']}] {h['task']}\n   📅 До: {h['deadline']}\n\n"
             await update.message.reply_text(msg, reply_markup=parent_keyboard())
 
     elif text == "✅ Відвідуваність моєї дитини":
-        parent_info = db["parents"].get(user_id, {})
-        student_name = parent_info.get("student", "") if isinstance(parent_info, dict) else ""
+        parents = db_get_parents()
+        parent_info = parents.get(user_id, {})
+        student_name = parent_info.get("student", "")
 
         if not student_name:
             await update.message.reply_text(
@@ -259,7 +337,7 @@ async def parent_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Рахуємо відвідуваність
         present_count = 0
         absent_count = 0
-        for key, record in db["attendance"].items():
+        for key, record in db_get_attendance().items():
             if student_name in record.get("present", []):
                 present_count += 1
             elif student_name in record.get("absent", []):
@@ -283,7 +361,6 @@ async def parent_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ─────────────────────────────────────────────
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_trainer(update):
-        # Перенаправляємо батьків
         await update.message.reply_text("Ваше меню:", reply_markup=parent_keyboard())
         return PARENT_MENU
 
@@ -305,7 +382,7 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🎓 Навчальні матеріали:", reply_markup=materials_keyboard())
         return MATERIALS_MENU
     elif text == "💬 Чат з батьками":
-        parents_count = len(db["parents"])
+        parents_count = len(db_get_parents())
         await update.message.reply_text(
             f"💬 Комунікація з батьками\n👥 Зареєстровано батьків: {parents_count}",
             reply_markup=chat_keyboard()
@@ -328,11 +405,12 @@ async def students_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
     elif text == "📄 Показати всіх":
-        if not db["students"]:
+        students = db_get_students()
+        if not students:
             await update.message.reply_text("📭 Список учнів порожній.", reply_markup=students_keyboard())
         else:
             msg = "📋 Список учнів:\n\n"
-            for i, s in enumerate(db["students"], 1):
+            for i, s in enumerate(students, 1):
                 msg += f"{i}. {s['name']} — {s['level']} | {s['phone']}\n"
             await update.message.reply_text(msg, reply_markup=students_keyboard())
         return STUDENTS_MENU
@@ -345,11 +423,12 @@ async def students_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ADD_STUDENT
     elif text == "🗑 Видалити учня":
-        if not db["students"]:
+        students = db_get_students()
+        if not students:
             await update.message.reply_text("Список порожній.", reply_markup=students_keyboard())
             return STUDENTS_MENU
         keyboard = [[InlineKeyboardButton(s["name"], callback_data=f"del_student_{i}")]
-                    for i, s in enumerate(db["students"])]
+                    for i, s in enumerate(students)]
         await update.message.reply_text("Оберіть учня для видалення:",
                                         reply_markup=InlineKeyboardMarkup(keyboard))
         return STUDENTS_MENU
@@ -363,8 +442,7 @@ async def add_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = [p.strip() for p in update.message.text.split("|")]
         student = {"name": parts[0], "level": parts[1], "phone": parts[2],
                    "added": datetime.now().strftime("%d.%m.%Y")}
-        db["students"].append(student)
-        save_db(db)
+        db_add_student(student)
         await update.message.reply_text(f"✅ Учня {student['name']} додано!", reply_markup=students_keyboard())
     except Exception:
         await update.message.reply_text("❌ Невірний формат. Спробуйте ще раз.", reply_markup=students_keyboard())
@@ -381,11 +459,12 @@ async def schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
     elif text == "📋 Показати розклад":
-        if not db["schedule"]:
+        schedule = db_get_schedule()
+        if not schedule:
             await update.message.reply_text("📭 Розклад порожній.", reply_markup=schedule_keyboard())
         else:
             days_order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-            sorted_schedule = sorted(db["schedule"],
+            sorted_schedule = sorted(schedule,
                 key=lambda x: days_order.index(x["day"]) if x["day"] in days_order else 9)
             msg = "📅 Розклад занять:\n\n"
             for s in sorted_schedule:
@@ -401,12 +480,13 @@ async def schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ADD_SCHEDULE
     elif text == "🗑 Видалити заняття":
-        if not db["schedule"]:
+        schedule = db_get_schedule()
+        if not schedule:
             await update.message.reply_text("Розклад порожній.", reply_markup=schedule_keyboard())
             return SCHEDULE_MENU
         keyboard = [[InlineKeyboardButton(
             f"{s['day']} {s['time']} — {s['group']}", callback_data=f"del_schedule_{i}")]
-            for i, s in enumerate(db["schedule"])]
+            for i, s in enumerate(schedule)]
         await update.message.reply_text("Оберіть заняття для видалення:",
                                         reply_markup=InlineKeyboardMarkup(keyboard))
         return SCHEDULE_MENU
@@ -419,8 +499,7 @@ async def add_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parts = [p.strip() for p in update.message.text.split("|")]
         entry = {"day": parts[0], "time": parts[1], "group": parts[2], "place": parts[3]}
-        db["schedule"].append(entry)
-        save_db(db)
+        db_add_schedule(entry)
         await update.message.reply_text(
             f"✅ Заняття {entry['day']} {entry['time']} додано!\n\n"
             f"🔔 Батьки будуть отримувати автонагадування за 2 години до цього заняття.",
@@ -441,11 +520,12 @@ async def homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
     elif text == "📋 Показати завдання":
-        if not db["homework"]:
+        homework = db_get_homework()
+        if not homework:
             await update.message.reply_text("📭 Завдань немає.", reply_markup=homework_keyboard())
         else:
             msg = "📚 Домашні завдання:\n\n"
-            for i, h in enumerate(db["homework"], 1):
+            for i, h in enumerate(homework, 1):
                 msg += f"{i}. [{h['group']}] {h['task']}\n   📅 До: {h['deadline']}\n\n"
             await update.message.reply_text(msg, reply_markup=homework_keyboard())
         return HOMEWORK_MENU
@@ -458,12 +538,13 @@ async def homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ADD_HOMEWORK
     elif text == "🗑 Видалити завдання":
-        if not db["homework"]:
+        homework = db_get_homework()
+        if not homework:
             await update.message.reply_text("Завдань немає.", reply_markup=homework_keyboard())
             return HOMEWORK_MENU
         keyboard = [[InlineKeyboardButton(
             f"[{h['group']}] {h['task'][:30]}...", callback_data=f"del_hw_{i}")]
-            for i, h in enumerate(db["homework"])]
+            for i, h in enumerate(homework)]
         await update.message.reply_text("Оберіть завдання для видалення:",
                                         reply_markup=InlineKeyboardMarkup(keyboard))
         return HOMEWORK_MENU
@@ -477,10 +558,9 @@ async def add_homework(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = [p.strip() for p in update.message.text.split("|")]
         hw = {"group": parts[0], "task": parts[1], "deadline": parts[2],
               "created": datetime.now().strftime("%d.%m.%Y")}
-        db["homework"].append(hw)
-        save_db(db)
+        db_add_homework(hw)
         sent = 0
-        for pid in db["parents"]:
+        for pid in db_get_parents():
             try:
                 await context.bot.send_message(
                     chat_id=int(pid),
@@ -511,11 +591,12 @@ async def news_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
     elif text == "📋 Показати новини":
-        if not db["news"]:
+        news = db_get_news()
+        if not news:
             await update.message.reply_text("📭 Новин немає.", reply_markup=news_keyboard())
         else:
             msg = "📢 Новини:\n\n"
-            for i, n in enumerate(db["news"], 1):
+            for i, n in enumerate(news, 1):
                 msg += f"{i}. {n['title']}\n   {n['text']}\n   📅 {n['date']}\n\n"
             await update.message.reply_text(msg, reply_markup=news_keyboard())
         return NEWS_MENU
@@ -527,11 +608,12 @@ async def news_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ADD_NEWS
     elif text == "🗑 Видалити новину":
-        if not db["news"]:
+        news = db_get_news()
+        if not news:
             await update.message.reply_text("Новин немає.", reply_markup=news_keyboard())
             return NEWS_MENU
         keyboard = [[InlineKeyboardButton(n["title"], callback_data=f"del_news_{i}")]
-                    for i, n in enumerate(db["news"])]
+                    for i, n in enumerate(news)]
         await update.message.reply_text("Оберіть новину для видалення:",
                                         reply_markup=InlineKeyboardMarkup(keyboard))
         return NEWS_MENU
@@ -544,10 +626,9 @@ async def add_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parts = [p.strip() for p in update.message.text.split("|")]
         news_item = {"title": parts[0], "text": parts[1], "date": datetime.now().strftime("%d.%m.%Y")}
-        db["news"].append(news_item)
-        save_db(db)
+        db_add_news(news_item)
         sent = 0
-        for pid in db["parents"]:
+        for pid in db_get_parents():
             try:
                 await context.bot.send_message(chat_id=int(pid),
                     text=f"📢 {news_item['title']}\n\n{news_item['text']}")
@@ -571,11 +652,12 @@ async def materials_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
     elif text == "📋 Показати матеріали":
-        if not db["materials"]:
+        materials = db_get_materials()
+        if not materials:
             await update.message.reply_text("📭 Матеріалів немає.", reply_markup=materials_keyboard())
         else:
             msg = "🎓 Навчальні матеріали:\n\n"
-            for i, m in enumerate(db["materials"], 1):
+            for i, m in enumerate(materials, 1):
                 msg += f"{i}. {m['title']}\n   🔗 {m['link']}\n   📁 {m['category']}\n\n"
             await update.message.reply_text(msg, reply_markup=materials_keyboard())
         return MATERIALS_MENU
@@ -587,11 +669,12 @@ async def materials_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ADD_MATERIAL
     elif text == "🗑 Видалити матеріал":
-        if not db["materials"]:
+        materials = db_get_materials()
+        if not materials:
             await update.message.reply_text("Матеріалів немає.", reply_markup=materials_keyboard())
             return MATERIALS_MENU
         keyboard = [[InlineKeyboardButton(m["title"], callback_data=f"del_material_{i}")]
-                    for i, m in enumerate(db["materials"])]
+                    for i, m in enumerate(materials)]
         await update.message.reply_text("Оберіть матеріал для видалення:",
                                         reply_markup=InlineKeyboardMarkup(keyboard))
         return MATERIALS_MENU
@@ -605,8 +688,7 @@ async def add_material(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = [p.strip() for p in update.message.text.split("|")]
         mat = {"title": parts[0], "link": parts[1], "category": parts[2],
                "date": datetime.now().strftime("%d.%m.%Y")}
-        db["materials"].append(mat)
-        save_db(db)
+        db_add_material(mat)
         await update.message.reply_text(f"✅ Матеріал '{mat['title']}' додано!", reply_markup=materials_keyboard())
     except Exception:
         await update.message.reply_text("❌ Невірний формат.", reply_markup=materials_keyboard())
@@ -623,30 +705,30 @@ async def chat_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
     elif text == "👥 Список батьків":
-        if not db["parents"]:
+        parents = db_get_parents()
+        if not parents:
             await update.message.reply_text("📭 Жоден батько ще не зареєструвався.", reply_markup=chat_keyboard())
         else:
             msg = "👥 Зареєстровані батьки:\n\n"
-            for pid, info in db["parents"].items():
-                name = info["name"] if isinstance(info, dict) else info
-                student = info.get("student", "не вказано") if isinstance(info, dict) else "не вказано"
-                msg += f"• {name} → учень: {student} (ID: {pid})\n"
+            for pid, info in parents.items():
+                student = info.get("student", "не вказано")
+                msg += f"• {info['name']} → учень: {student} (ID: {pid})\n"
             await update.message.reply_text(msg, reply_markup=chat_keyboard())
         return CHAT_MENU
     elif text == "🔗 Прив'язати батька до учня":
-        if not db["parents"]:
+        parents = db_get_parents()
+        students = db_get_students()
+        if not parents:
             await update.message.reply_text("📭 Жоден батько ще не зареєструвався.", reply_markup=chat_keyboard())
             return CHAT_MENU
-        if not db["students"]:
+        if not students:
             await update.message.reply_text("📭 Спочатку додайте учнів.", reply_markup=chat_keyboard())
             return CHAT_MENU
-        # Показуємо список батьків для вибору
         keyboard = []
-        for pid, info in db["parents"].items():
-            name = info["name"] if isinstance(info, dict) else info
-            student = info.get("student", "не вказано") if isinstance(info, dict) else "не вказано"
+        for pid, info in parents.items():
+            student = info.get("student", "не вказано")
             keyboard.append([InlineKeyboardButton(
-                f"{name} → {student}", callback_data=f"link_parent_{pid}"
+                f"{info['name']} → {student}", callback_data=f"link_parent_{pid}"
             )])
         await update.message.reply_text(
             "Оберіть батька для прив'язки до учня:",
@@ -663,7 +745,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
     sent = failed = 0
-    for pid in db["parents"]:
+    for pid in db_get_parents():
         try:
             await context.bot.send_message(chat_id=int(pid),
                 text=f"📣 Повідомлення від тренера:\n\n{update.message.text}")
@@ -688,14 +770,14 @@ async def attendance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MAIN_MENU
 
     elif text == "📝 Відмітити відвідуваність":
-        if not db["students"]:
+        students = db_get_students()
+        if not students:
             await update.message.reply_text("📭 Спочатку додайте учнів.", reply_markup=attendance_keyboard())
             return ATTENDANCE_MENU
 
         today = datetime.now().strftime("%d.%m.%Y")
-        # Показуємо кнопки для кожного учня
         keyboard = []
-        for i, s in enumerate(db["students"]):
+        for i, s in enumerate(students):
             keyboard.append([
                 InlineKeyboardButton(f"✅ {s['name']}", callback_data=f"att_present_{i}"),
                 InlineKeyboardButton(f"❌ {s['name']}", callback_data=f"att_absent_{i}"),
@@ -710,12 +792,13 @@ async def attendance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ATTENDANCE_MENU
 
     elif text == "📊 Статистика відвідуваності":
-        if not db["attendance"]:
+        attendance = db_get_attendance()
+        if not attendance:
             await update.message.reply_text("📭 Даних ще немає.", reply_markup=attendance_keyboard())
             return ATTENDANCE_MENU
 
         stats = {}
-        for record in db["attendance"].values():
+        for record in attendance.values():
             for name in record.get("present", []):
                 stats.setdefault(name, {"present": 0, "absent": 0})
                 stats[name]["present"] += 1
@@ -732,11 +815,12 @@ async def attendance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ATTENDANCE_MENU
 
     elif text == "📋 Журнал за датою":
-        if not db["attendance"]:
+        attendance = db_get_attendance()
+        if not attendance:
             await update.message.reply_text("📭 Даних ще немає.", reply_markup=attendance_keyboard())
             return ATTENDANCE_MENU
         msg = "📋 Журнал відвідуваності:\n\n"
-        for key, record in sorted(db["attendance"].items(), reverse=True)[:10]:
+        for key, record in sorted(attendance.items(), reverse=True)[:10]:
             date = record.get("date", key)
             present = ", ".join(record.get("present", [])) or "—"
             absent = ", ".join(record.get("absent", [])) or "—"
@@ -747,21 +831,22 @@ async def attendance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ATTENDANCE_MENU
 
 # ─────────────────────────────────────────────
-# CALLBACK — ВІДВІДУВАНІСТЬ + ВИДАЛЕННЯ
+# CALLBACK — ВІДВІДУВАНІСТЬ + ПРИВ'ЯЗКА + ВИДАЛЕННЯ
 # ─────────────────────────────────────────────
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    # Прив'язка батька до учня — крок 1: вибір батька
+    # ── Прив'язка батька — крок 1: вибір батька ──
     if data.startswith("link_parent_"):
         pid = data.replace("link_parent_", "")
         context.user_data["linking_parent_id"] = pid
-        # Показуємо список учнів
+        students = db_get_students()
+        parents = db_get_parents()
+        parent_name = parents.get(pid, {}).get("name", "?")
         keyboard = [[InlineKeyboardButton(s["name"], callback_data=f"link_student_{i}")]
-                    for i, s in enumerate(db["students"])]
-        parent_name = db["parents"][pid]["name"] if isinstance(db["parents"][pid], dict) else db["parents"][pid]
+                    for i, s in enumerate(students)]
         await query.edit_message_text(
             f"👤 Батько: <b>{parent_name}</b>\n\nОберіть учня для прив'язки:",
             parse_mode="HTML",
@@ -769,21 +854,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Прив'язка батька до учня — крок 2: вибір учня
+    # ── Прив'язка батька — крок 2: вибір учня ──
     elif data.startswith("link_student_"):
         idx = int(data.split("_")[-1])
         pid = context.user_data.get("linking_parent_id")
-        if not pid or pid not in db["parents"]:
+        if not pid:
             await query.edit_message_text("❌ Помилка. Спробуйте знову.")
             return
-        student_name = db["students"][idx]["name"]
-        if isinstance(db["parents"][pid], dict):
-            db["parents"][pid]["student"] = student_name
-        else:
-            db["parents"][pid] = {"name": db["parents"][pid], "student": student_name}
-        save_db(db)
-        parent_name = db["parents"][pid]["name"]
-        # Сповіщаємо батька
+        students = db_get_students()
+        student_name = students[idx]["name"]
+        db_link_parent_to_student(pid, student_name)
+        parents = db_get_parents()
+        parent_name = parents.get(pid, {}).get("name", "?")
         try:
             await context.bot.send_message(
                 chat_id=int(pid),
@@ -793,15 +875,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
-        await query.edit_message_text(
-            f"✅ Готово!\n\n👨‍👩‍👦 {parent_name} → 🎓 {student_name}"
-        )
+        await query.edit_message_text(f"✅ Готово!\n\n👨‍👩‍👦 {parent_name} → 🎓 {student_name}")
         return
 
-    # Відвідуваність
+    # ── Відвідуваність ──
     if data.startswith("att_present_"):
         idx = int(data.split("_")[-1])
-        name = db["students"][idx]["name"]
+        students = db_get_students()
+        name = students[idx]["name"]
         att = context.user_data.get("attendance_today", {"present": [], "absent": []})
         if name not in att["present"]:
             att["present"].append(name)
@@ -812,7 +893,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("att_absent_"):
         idx = int(data.split("_")[-1])
-        name = db["students"][idx]["name"]
+        students = db_get_students()
+        name = students[idx]["name"]
         att = context.user_data.get("attendance_today", {"present": [], "absent": []})
         if name not in att.get("absent", []):
             att.setdefault("absent", []).append(name)
@@ -825,15 +907,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         att = context.user_data.get("attendance_today", {})
         date = att.get("date", datetime.now().strftime("%d.%m.%Y"))
         key = date.replace(".", "-")
-        db["attendance"][key] = att
-        save_db(db)
+        db_save_attendance(key, att)
 
         present = ", ".join(att.get("present", [])) or "—"
         absent = ", ".join(att.get("absent", [])) or "—"
 
         # Сповіщаємо батьків відсутніх
-        for pid, info in db["parents"].items():
-            student_name = info.get("student", "") if isinstance(info, dict) else ""
+        for pid, info in db_get_parents().items():
+            student_name = info.get("student", "")
             if student_name in att.get("absent", []):
                 try:
                     await context.bot.send_message(
@@ -851,39 +932,38 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Відсутні: {absent}"
         )
 
-    # Видалення
+    # ── Видалення ──
     elif data.startswith("del_student_"):
         idx = int(data.split("_")[-1])
-        name = db["students"][idx]["name"]
-        db["students"].pop(idx)
-        save_db(db)
+        students = db_get_students()
+        name = students[idx]["name"]
+        db_delete_student(idx)
         await query.edit_message_text(f"🗑 Учня {name} видалено.")
 
     elif data.startswith("del_schedule_"):
         idx = int(data.split("_")[-1])
-        s = db["schedule"][idx]
-        db["schedule"].pop(idx)
-        save_db(db)
+        schedule = db_get_schedule()
+        s = schedule[idx]
+        db_delete_schedule(idx)
         await query.edit_message_text(f"🗑 Заняття {s['day']} {s['time']} видалено.")
 
     elif data.startswith("del_hw_"):
         idx = int(data.split("_")[-1])
-        db["homework"].pop(idx)
-        save_db(db)
+        db_delete_homework(idx)
         await query.edit_message_text("🗑 Завдання видалено.")
 
     elif data.startswith("del_news_"):
         idx = int(data.split("_")[-1])
-        n = db["news"][idx]
-        db["news"].pop(idx)
-        save_db(db)
+        news = db_get_news()
+        n = news[idx]
+        db_delete_news(idx)
         await query.edit_message_text(f"🗑 Новину '{n['title']}' видалено.")
 
     elif data.startswith("del_material_"):
         idx = int(data.split("_")[-1])
-        m = db["materials"][idx]
-        db["materials"].pop(idx)
-        save_db(db)
+        materials = db_get_materials()
+        m = materials[idx]
+        db_delete_material(idx)
         await query.edit_message_text(f"🗑 Матеріал '{m['title']}' видалено.")
 
 # ─────────────────────────────────────────────
@@ -922,7 +1002,7 @@ def main():
     # Автонагадування — перевірка щогодини
     app.job_queue.run_repeating(send_reminders, interval=3600, first=10)
 
-    print("♟️ Chess Trainer Bot v2 запущено!")
+    print("♟️ Chess Trainer Bot v3 + MongoDB запущено!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
