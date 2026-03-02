@@ -43,8 +43,18 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 # MONGODB — підключення та helpers
 # ─────────────────────────────────────────────
-mongo_client = MongoClient(MONGODB_URI)
+mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
 mdb = mongo_client["chess_trainer"]
+
+# ── Перевірка підключення при старті ──
+def check_mongo_connection():
+    try:
+        mongo_client.admin.command('ping')
+        logger.info("✅ MongoDB підключено успішно!")
+        return True
+    except Exception as e:
+        logger.error(f"❌ MongoDB помилка підключення: {e}")
+        return False
 
 def col(name):
     return mdb[name]
@@ -169,6 +179,36 @@ def main_keyboard():
 
 def back_keyboard():
     return ReplyKeyboardMarkup([["⬅️ Головне меню"]], resize_keyboard=True)
+
+def back_to_schedule_keyboard():
+    return ReplyKeyboardMarkup([
+        ["⬅️ До розкладу"],
+        ["⬅️ Головне меню"]
+    ], resize_keyboard=True)
+
+def back_to_students_keyboard():
+    return ReplyKeyboardMarkup([
+        ["⬅️ До списку учнів"],
+        ["⬅️ Головне меню"]
+    ], resize_keyboard=True)
+
+def back_to_homework_keyboard():
+    return ReplyKeyboardMarkup([
+        ["⬅️ До завдань"],
+        ["⬅️ Головне меню"]
+    ], resize_keyboard=True)
+
+def back_to_news_keyboard():
+    return ReplyKeyboardMarkup([
+        ["⬅️ До новин"],
+        ["⬅️ Головне меню"]
+    ], resize_keyboard=True)
+
+def back_to_materials_keyboard():
+    return ReplyKeyboardMarkup([
+        ["⬅️ До матеріалів"],
+        ["⬅️ Головне меню"]
+    ], resize_keyboard=True)
 
 def students_keyboard():
     return ReplyKeyboardMarkup([
@@ -434,7 +474,7 @@ async def students_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Введіть дані учня у форматі:\n"
             "<b>Ім'я Прізвище | рівень | телефон батьків</b>\n\n"
             "Приклад: Олег Іванов | початківець | +380991234567",
-            parse_mode="HTML", reply_markup=back_keyboard()
+            parse_mode="HTML", reply_markup=back_to_students_keyboard()
         )
         return ADD_STUDENT
     elif text == "🗑 Видалити учня":
@@ -450,30 +490,36 @@ async def students_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return STUDENTS_MENU
 
 async def add_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "⬅️ Головне меню":
+    text = update.message.text
+    if text == "⬅️ Головне меню":
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
+    if text == "⬅️ До списку учнів":
+        await update.message.reply_text("👦 Управління учнями:", reply_markup=students_keyboard())
+        return STUDENTS_MENU
     try:
         parts = [p.strip() for p in update.message.text.split("|")]
+        logger.info(f"[ADD_STUDENT] Розібрано: {parts}")
         if len(parts) < 3:
-            raise ValueError("Недостатньо полів — потрібно 3 поля через |")
+            raise ValueError(f"Недостатньо полів — отримано {len(parts)}: {parts}")
         student = {
             "name": parts[0],
             "level": parts[1],
             "phone": parts[2],
             "added": datetime.now().strftime("%d.%m.%Y")
         }
-        db_add_student(student)  # ✅ deepcopy всередині — _id не потрапить в student
+        db_add_student(student)
+        logger.info(f"[ADD_STUDENT] ✅ Учня {student['name']} збережено!")
         await update.message.reply_text(
             f"✅ Учня {student['name']} успішно додано!",
             reply_markup=students_keyboard()
         )
     except Exception as e:
-        logger.error(f"add_student помилка: {e}")
+        logger.error(f"[ADD_STUDENT] ❌ Помилка: {e}")
         await update.message.reply_text(
             f"❌ Помилка: {e}\n\nФормат: <b>Ім'я | рівень | телефон</b>",
             parse_mode="HTML",
-            reply_markup=students_keyboard()
+            reply_markup=back_to_students_keyboard()
         )
     return STUDENTS_MENU
 
@@ -505,7 +551,7 @@ async def schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Введіть заняття у форматі:\n"
             "<b>День | Час | Група | Місце</b>\n\n"
             "Приклад: Пн | 17:00 | Початківці | Зал №1",
-            parse_mode="HTML", reply_markup=back_keyboard()
+            parse_mode="HTML", reply_markup=back_to_schedule_keyboard()
         )
         return ADD_SCHEDULE
     elif text == "🗑 Видалити заняття":
@@ -522,26 +568,34 @@ async def schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SCHEDULE_MENU
 
 async def add_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "⬅️ Головне меню":
+    text = update.message.text
+    logger.info(f"[ADD_SCHEDULE] Отримано повідомлення: '{text}'")  # ← лог для діагностики
+    if text == "⬅️ Головне меню":
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
+    if text == "⬅️ До розкладу":
+        await update.message.reply_text("📅 Управління розкладом:", reply_markup=schedule_keyboard())
+        return SCHEDULE_MENU
     try:
-        parts = [p.strip() for p in update.message.text.split("|")]
+        parts = [p.strip() for p in text.split("|")]
+        logger.info(f"[ADD_SCHEDULE] Розібрано частини: {parts}")
         if len(parts) < 4:
-            raise ValueError("Потрібно 4 поля через |")
+            raise ValueError(f"Потрібно 4 поля через |, отримано {len(parts)}: {parts}")
         entry = {"day": parts[0], "time": parts[1], "group": parts[2], "place": parts[3]}
+        logger.info(f"[ADD_SCHEDULE] Зберігаємо в MongoDB: {entry}")
         db_add_schedule(entry)
+        logger.info(f"[ADD_SCHEDULE] ✅ Збережено успішно!")
         await update.message.reply_text(
             f"✅ Заняття {entry['day']} {entry['time']} додано!\n\n"
             f"🔔 Батьки будуть отримувати автонагадування за 2 години до цього заняття.",
             reply_markup=schedule_keyboard()
         )
     except Exception as e:
-        logger.error(f"add_schedule помилка: {e}")
+        logger.error(f"[ADD_SCHEDULE] ❌ Помилка: {e}")
         await update.message.reply_text(
             f"❌ Помилка: {e}\n\nФормат: <b>День | Час | Група | Місце</b>",
             parse_mode="HTML",
-            reply_markup=schedule_keyboard()
+            reply_markup=back_to_schedule_keyboard()
         )
     return SCHEDULE_MENU
 
@@ -570,7 +624,7 @@ async def homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Введіть завдання у форматі:\n"
             "<b>Група | Завдання | Дедлайн</b>\n\n"
             "Приклад: Початківці | Вивчити відкриття e4 e5 | 15.03.2025",
-            parse_mode="HTML", reply_markup=back_keyboard()
+            parse_mode="HTML", reply_markup=back_to_homework_keyboard()
         )
         return ADD_HOMEWORK
     elif text == "🗑 Видалити завдання":
@@ -587,9 +641,13 @@ async def homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return HOMEWORK_MENU
 
 async def add_homework(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "⬅️ Головне меню":
+    text = update.message.text
+    if text == "⬅️ Головне меню":
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
+    if text == "⬅️ До завдань":
+        await update.message.reply_text("📚 Домашні завдання:", reply_markup=homework_keyboard())
+        return HOMEWORK_MENU
     try:
         parts = [p.strip() for p in update.message.text.split("|")]
         if len(parts) < 3:
@@ -651,7 +709,7 @@ async def news_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Введіть новину у форматі:\n<b>Заголовок | Текст</b>\n\n"
             "Приклад: Турнір у квітні | Запрошуємо всіх учнів 12 квітня!",
-            parse_mode="HTML", reply_markup=back_keyboard()
+            parse_mode="HTML", reply_markup=back_to_news_keyboard()
         )
         return ADD_NEWS
     elif text == "🗑 Видалити новину":
@@ -667,9 +725,13 @@ async def news_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return NEWS_MENU
 
 async def add_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "⬅️ Головне меню":
+    text = update.message.text
+    if text == "⬅️ Головне меню":
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
+    if text == "⬅️ До новин":
+        await update.message.reply_text("📢 Новини школи:", reply_markup=news_keyboard())
+        return NEWS_MENU
     try:
         parts = [p.strip() for p in update.message.text.split("|")]
         if len(parts) < 2:
@@ -727,7 +789,7 @@ async def materials_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Введіть матеріал у форматі:\n<b>Назва | Посилання | Категорія</b>\n\n"
             "Приклад: Збірник задач | https://example.com | Задачники",
-            parse_mode="HTML", reply_markup=back_keyboard()
+            parse_mode="HTML", reply_markup=back_to_materials_keyboard()
         )
         return ADD_MATERIAL
     elif text == "🗑 Видалити матеріал":
@@ -743,9 +805,13 @@ async def materials_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MATERIALS_MENU
 
 async def add_material(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "⬅️ Головне меню":
+    text = update.message.text
+    if text == "⬅️ Головне меню":
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
+    if text == "⬅️ До матеріалів":
+        await update.message.reply_text("🎓 Навчальні матеріали:", reply_markup=materials_keyboard())
+        return MATERIALS_MENU
     try:
         parts = [p.strip() for p in update.message.text.split("|")]
         if len(parts) < 3:
@@ -817,7 +883,8 @@ async def chat_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CHAT_MENU
 
 async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "⬅️ Головне меню":
+    text = update.message.text
+    if text == "⬅️ Головне меню":
         await update.message.reply_text("Головне меню:", reply_markup=main_keyboard())
         return MAIN_MENU
     sent = failed = 0
@@ -1061,6 +1128,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+
+    # ── Перевіряємо MongoDB при старті ──
+    if not check_mongo_connection():
+        print("❌ КРИТИЧНА ПОМИЛКА: Не вдалося підключитися до MongoDB! Перевірте MONGODB_URI")
+        return
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
