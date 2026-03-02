@@ -51,7 +51,12 @@ def init_mongo():
     logger.info(f"🔗 MONGODB_URI: {'✅ знайдено' if uri else '❌ ПОРОЖНЬО!'}")
     if not uri:
         raise ValueError("MONGODB_URI не знайдено! Додайте змінну в Railway → Variables")
-    mongo_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+    mongo_client = MongoClient(
+        uri,
+        serverSelectionTimeoutMS=5000,
+        tls=True,
+        tlsAllowInvalidCertificates=True
+    )
     mdb = mongo_client["chess_trainer"]
     mongo_client.admin.command("ping")
     logger.info("✅ MongoDB Atlas підключено успішно!")
