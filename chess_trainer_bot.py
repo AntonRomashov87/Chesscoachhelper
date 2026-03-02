@@ -392,7 +392,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info = db_get_parents()[str(user.id)]
         await update.message.reply_text(
             f"👋 Вітаємо, {user.first_name}!\n"
-            f"👤 Дитина: {info.get('student','') or 'ще не прив\'язано'}",
+            f"👤 Дитина: {info.get('student') or 'ще не прив`язано'}",
             reply_markup=parent_keyboard()
         )
         return PARENT_MENU
