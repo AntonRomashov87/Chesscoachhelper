@@ -1,7 +1,6 @@
 """
-♟️ Chess Trainer Bot v4.0 — Telegram-бот для тренера шахової школи
-НОВЕ: Окремі ролі для учня, батька і тренера
-Залежності: pip install python-telegram-bot[job-queue]==20.7 pymongo[srv]==4.9.2 certifi dnspython
+♟️ Chess Trainer Bot v5.0 — Telegram-бот для тренера шахової школи
+НОВЕ: Групові сповіщення — батьки/учні отримують тільки повідомлення своєї групи
 """
 
 import logging
@@ -37,9 +36,9 @@ logger = logging.getLogger(__name__)
     CHAT_MENU, BROADCAST_MSG, ATTENDANCE_MENU,
     PARENT_MENU, STUDENT_MENU,
     TOURNAMENTS_MENU, ADD_TOURNAMENT,
-    CHOOSE_ROLE, REGISTER_STUDENT, REGISTER_PARENT,
+    CHOOSE_ROLE, REGISTER_STUDENT,
     LINK_PARENT
-) = range(22)
+) = range(21)
 
 # ─────────────────────────────────────────────
 # MONGODB
@@ -83,7 +82,6 @@ def db_delete_student(idx: int):
         col("students").delete_one({"name": items[idx]["name"]})
 
 def db_find_student_by_phone(phone: str):
-    """Знаходить учня за телефоном учня"""
     return col("students").find_one({"student_phone": phone}, {"_id": 0})
 
 # ── Розклад ──
@@ -110,7 +108,7 @@ def db_delete_homework(idx: int):
     items = db_get_homework()
     if 0 <= idx < len(items):
         item = items[idx]
-        col("homework").delete_one({"group": item["group"], "task": item["task"], "deadline": item["deadline"]})
+        col("homework").delete_one({"group": item["group"], "task": item["task"]})
 
 # ── Новини ──
 def db_get_news() -> list:
@@ -154,30 +152,43 @@ def db_delete_tournament(idx: int):
 def db_get_parents() -> dict:
     result = {}
     for p in col("parents").find({}, {"_id": 0}):
-        result[p["pid"]] = {"name": p["name"], "student": p.get("student", "")}
+        result[p["pid"]] = {
+            "name": p["name"],
+            "student": p.get("student", ""),
+            "group": p.get("group", ""),       # група учня
+            "rank": p.get("rank", ""),         # розряд учня
+        }
     return result
 
-def db_upsert_parent(pid: str, name: str, student: str = ""):
+def db_upsert_parent(pid: str, name: str, student: str = "", group: str = "", rank: str = ""):
     col("parents").update_one(
         {"pid": pid},
-        {"$set": {"pid": pid, "name": name, "student": student}},
+        {"$set": {"pid": pid, "name": name, "student": student, "group": group, "rank": rank}},
         upsert=True
     )
 
-def db_link_parent_to_student(pid: str, student_name: str):
-    col("parents").update_one({"pid": pid}, {"$set": {"student": student_name}})
+def db_link_parent_to_student(pid: str, student_name: str, group: str, rank: str):
+    col("parents").update_one(
+        {"pid": pid},
+        {"$set": {"student": student_name, "group": group, "rank": rank}}
+    )
 
 # ── Учні-користувачі (Telegram акаунти учнів) ──
 def db_get_student_users() -> dict:
     result = {}
     for s in col("student_users").find({}, {"_id": 0}):
-        result[s["uid"]] = {"name": s["name"], "student_name": s.get("student_name", "")}
+        result[s["uid"]] = {
+            "name": s["name"],
+            "student_name": s.get("student_name", ""),
+            "group": s.get("group", ""),
+            "rank": s.get("rank", ""),
+        }
     return result
 
-def db_upsert_student_user(uid: str, name: str, student_name: str = ""):
+def db_upsert_student_user(uid: str, name: str, student_name: str = "", group: str = "", rank: str = ""):
     col("student_users").update_one(
         {"uid": uid},
-        {"$set": {"uid": uid, "name": name, "student_name": student_name}},
+        {"$set": {"uid": uid, "name": name, "student_name": student_name, "group": group, "rank": rank}},
         upsert=True
     )
 
@@ -194,18 +205,48 @@ def db_save_attendance(key: str, record: dict):
     col("attendance").update_one({"key": key}, {"$set": data}, upsert=True)
 
 # ─────────────────────────────────────────────
+# HELPERS — групові розсилки
+# ─────────────────────────────────────────────
+def group_matches(user_group: str, user_rank: str, target_group: str) -> bool:
+    """Перевіряє чи підходить користувач під цільову групу розсилки."""
+    if not target_group or target_group.lower() in ("всі", "all", ""):
+        return True
+    target_lower = target_group.lower()
+    return (user_group.lower() == target_lower or
+            user_rank.lower() == target_lower or
+            target_lower in user_group.lower() or
+            target_lower in user_rank.lower())
+
+async def notify_group(context, target_group: str, text: str):
+    """Надсилає повідомлення батькам і учням відповідної групи."""
+    sent = 0
+    # Батьки
+    for pid, info in db_get_parents().items():
+        if group_matches(info.get("group", ""), info.get("rank", ""), target_group):
+            try:
+                await context.bot.send_message(chat_id=int(pid), text=text)
+                sent += 1
+            except Exception:
+                pass
+    # Учні
+    for uid, info in db_get_student_users().items():
+        if group_matches(info.get("group", ""), info.get("rank", ""), target_group):
+            try:
+                await context.bot.send_message(chat_id=int(uid), text=text)
+                sent += 1
+            except Exception:
+                pass
+    return sent
+
+async def notify_all(context, text: str):
+    """Надсилає всім батькам і учням."""
+    return await notify_group(context, "", text)
+
+# ─────────────────────────────────────────────
 # ПЕРЕВІРКА РОЛІ
 # ─────────────────────────────────────────────
 def is_trainer(update: Update) -> bool:
     return update.effective_user.id == TRAINER_ID
-
-def is_student_user(update: Update) -> bool:
-    uid = str(update.effective_user.id)
-    return uid in db_get_student_users()
-
-def is_parent(update: Update) -> bool:
-    uid = str(update.effective_user.id)
-    return uid in db_get_parents()
 
 # ─────────────────────────────────────────────
 # КЛАВІАТУРИ — ТРЕНЕР
@@ -221,23 +262,8 @@ def main_keyboard():
 def back_keyboard():
     return ReplyKeyboardMarkup([["⬅️ Головне меню"]], resize_keyboard=True)
 
-def back_to_schedule_keyboard():
-    return ReplyKeyboardMarkup([["⬅️ До розкладу"], ["⬅️ Головне меню"]], resize_keyboard=True)
-
-def back_to_students_keyboard():
-    return ReplyKeyboardMarkup([["⬅️ До списку учнів"], ["⬅️ Головне меню"]], resize_keyboard=True)
-
-def back_to_homework_keyboard():
-    return ReplyKeyboardMarkup([["⬅️ До завдань"], ["⬅️ Головне меню"]], resize_keyboard=True)
-
-def back_to_news_keyboard():
-    return ReplyKeyboardMarkup([["⬅️ До новин"], ["⬅️ Головне меню"]], resize_keyboard=True)
-
-def back_to_materials_keyboard():
-    return ReplyKeyboardMarkup([["⬅️ До матеріалів"], ["⬅️ Головне меню"]], resize_keyboard=True)
-
-def back_to_tournaments_keyboard():
-    return ReplyKeyboardMarkup([["⬅️ До турнірів"], ["⬅️ Головне меню"]], resize_keyboard=True)
+def back_to_keyboard(label: str):
+    return ReplyKeyboardMarkup([[f"⬅️ До {label}"], ["⬅️ Головне меню"]], resize_keyboard=True)
 
 def students_keyboard():
     return ReplyKeyboardMarkup([
@@ -288,27 +314,21 @@ def tournaments_keyboard():
     ], resize_keyboard=True)
 
 # ─────────────────────────────────────────────
-# КЛАВІАТУРИ — БАТЬКИ
+# КЛАВІАТУРИ — БАТЬКИ / УЧНІ
 # ─────────────────────────────────────────────
 def parent_keyboard():
     return ReplyKeyboardMarkup([
-        ["📅 Розклад занять",          "📚 Домашні завдання"],
-        ["✅ Відвідуваність дитини",   "🏆 Турніри"],
+        ["📅 Розклад занять",        "📚 Домашні завдання"],
+        ["✅ Відвідуваність дитини", "🏆 Турніри"],
     ], resize_keyboard=True)
 
-# ─────────────────────────────────────────────
-# КЛАВІАТУРИ — УЧНІ
-# ─────────────────────────────────────────────
 def student_keyboard():
     return ReplyKeyboardMarkup([
-        ["📅 Розклад занять",    "📚 Домашні завдання"],
-        ["✅ Моя відвідуваність","🎓 Навчальні матеріали"],
+        ["📅 Розклад занять",     "📚 Домашні завдання"],
+        ["✅ Моя відвідуваність", "🎓 Навчальні матеріали"],
         ["🏆 Турніри"],
     ], resize_keyboard=True)
 
-# ─────────────────────────────────────────────
-# КЛАВІАТУРА — ВИБІР РОЛІ
-# ─────────────────────────────────────────────
 def role_keyboard():
     return ReplyKeyboardMarkup([
         ["♟️ Я учень"],
@@ -321,6 +341,7 @@ def role_keyboard():
 DAYS_UA_TO_NUM = {"Пн": 0, "Вт": 1, "Ср": 2, "Чт": 3, "Пт": 4, "Сб": 5, "Нд": 6}
 
 async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Щогодини перевіряє розклад і надсилає нагадування за 2 год ТІЛЬКИ своїй групі."""
     now = datetime.now()
     total_now_mins = now.hour * 60 + now.minute
     for lesson in db_get_schedule():
@@ -333,24 +354,17 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
             continue
         diff = (h * 60 + m) - total_now_mins
         if 115 <= diff <= 125:
+            group = lesson.get("group", "")
             msg = (
                 f"⏰ Нагадування!\n\nЧерез 2 години заняття з шахів!\n"
-                f"👥 Група: {lesson.get('group','')}\n"
+                f"👥 Група: {group}\n"
                 f"🕐 Час: {lesson['time']}\n"
-                f"📍 Місце: {lesson.get('place','')}\n\nНе забудьте! ♟️"
+                f"📍 Місце: {lesson.get('place', '')}\n\n"
+                f"Не забудьте! ♟️"
             )
-            # Надсилаємо батькам
-            for pid in db_get_parents():
-                try:
-                    await context.bot.send_message(chat_id=int(pid), text=msg)
-                except Exception:
-                    pass
-            # Надсилаємо учням
-            for uid in db_get_student_users():
-                try:
-                    await context.bot.send_message(chat_id=int(uid), text=msg)
-                except Exception:
-                    pass
+            sent = await notify_group(context, group, msg)
+            if sent > 0:
+                logger.info(f"Нагадування надіслано {sent} людям для групи {group}")
 
 # ─────────────────────────────────────────────
 # /start — ВИБІР РОЛІ
@@ -358,7 +372,6 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    # Тренер
     if user.id == TRAINER_ID:
         await update.message.reply_text(
             f"♟️ Вітаємо, тренере {user.first_name}!\n\nОберіть розділ 👇",
@@ -366,24 +379,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
-    # Якщо вже зареєстрований учень
     if str(user.id) in db_get_student_users():
+        info = db_get_student_users()[str(user.id)]
         await update.message.reply_text(
-            f"♟️ Вітаємо, {user.first_name}!", reply_markup=student_keyboard()
+            f"♟️ Вітаємо, {info['student_name']}!\n"
+            f"👥 Група: {info.get('group','')} | 🏅 Розряд: {info.get('rank','')}",
+            reply_markup=student_keyboard()
         )
         return STUDENT_MENU
 
-    # Якщо вже зареєстрований батько
     if str(user.id) in db_get_parents():
+        info = db_get_parents()[str(user.id)]
         await update.message.reply_text(
-            f"👋 Вітаємо, {user.first_name}!", reply_markup=parent_keyboard()
+            f"👋 Вітаємо, {user.first_name}!\n"
+            f"👤 Дитина: {info.get('student','') or 'ще не прив\'язано'}",
+            reply_markup=parent_keyboard()
         )
         return PARENT_MENU
 
-    # Новий користувач — вибір ролі
     await update.message.reply_text(
-        f"👋 Вітаємо, {user.first_name}!\n\n"
-        "Будь ласка, оберіть хто ви:",
+        f"👋 Вітаємо, {user.first_name}!\n\nБудь ласка, оберіть хто ви:",
         reply_markup=role_keyboard()
     )
     return CHOOSE_ROLE
@@ -404,9 +419,9 @@ async def choose_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return REGISTER_STUDENT
 
     elif text == "👨‍👩‍👦 Я батько/мати":
-        db_upsert_parent(str(user.id), user.full_name, "")
+        db_upsert_parent(str(user.id), user.full_name)
         await update.message.reply_text(
-            f"✅ Ви зареєстровані як батько/мати!\n\n"
+            "✅ Ви зареєстровані як батько/мати!\n\n"
             "Тренер прив'яже вас до вашої дитини.\n"
             "До того часу ви можете переглядати розклад та домашні завдання.",
             reply_markup=parent_keyboard()
@@ -426,23 +441,26 @@ async def register_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Оберіть роль:", reply_markup=role_keyboard())
         return CHOOSE_ROLE
 
-    # Шукаємо учня за телефоном
     student = db_find_student_by_phone(text)
     if not student:
         await update.message.reply_text(
             "❌ Номер телефону не знайдено в базі.\n\n"
-            "Перевірте номер або зверніться до тренера.\n\n"
-            "Спробуйте ще раз:",
+            "Перевірте номер або зверніться до тренера.\n\nСпробуйте ще раз:",
             reply_markup=ReplyKeyboardMarkup([["⬅️ Назад"]], resize_keyboard=True)
         )
         return REGISTER_STUDENT
 
-    # Реєструємо учня
-    db_upsert_student_user(str(user.id), user.full_name, student["name"])
+    db_upsert_student_user(
+        str(user.id), user.full_name,
+        student["name"],
+        student.get("group", ""),
+        student.get("rank", "")
+    )
     await update.message.reply_text(
         f"✅ Вітаємо, {student['name']}!\n\n"
-        f"Ви успішно увійшли як учень ♟️\n"
-        f"Тепер ви маєте доступ до розкладу, домашніх завдань та матеріалів.",
+        f"👥 Ваша група: {student.get('group', '—')}\n"
+        f"🏅 Розряд: {student.get('rank', '—')}\n\n"
+        "Тепер ви маєте доступ до розкладу, домашніх завдань та матеріалів ♟️",
         reply_markup=student_keyboard()
     )
     return STUDENT_MENU
@@ -457,27 +475,33 @@ async def student_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     text = update.message.text
     uid = str(update.effective_user.id)
-    student_users = db_get_student_users()
-    student_name = student_users.get(uid, {}).get("student_name", "")
+    info = db_get_student_users().get(uid, {})
+    student_name = info.get("student_name", "")
+    student_group = info.get("group", "")
+    student_rank = info.get("rank", "")
 
     if text == "📅 Розклад занять":
         schedule = db_get_schedule()
-        if not schedule:
-            await update.message.reply_text("📭 Розклад ще не додано.", reply_markup=student_keyboard())
+        # Показуємо тільки заняття своєї групи
+        my_schedule = [s for s in schedule if group_matches(student_group, student_rank, s.get("group", ""))]
+        if not my_schedule:
+            await update.message.reply_text("📭 Занять для вашої групи не знайдено.", reply_markup=student_keyboard())
         else:
             days_order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-            sorted_s = sorted(schedule, key=lambda x: days_order.index(x["day"]) if x["day"] in days_order else 9)
-            msg = "📅 Розклад занять:\n\n" + "".join(
+            sorted_s = sorted(my_schedule, key=lambda x: days_order.index(x["day"]) if x["day"] in days_order else 9)
+            msg = f"📅 Розклад для групи {student_group}:\n\n" + "".join(
                 f"📌 {s['day']} {s['time']} — {s['group']} ({s['place']})\n" for s in sorted_s)
             await update.message.reply_text(msg, reply_markup=student_keyboard())
 
     elif text == "📚 Домашні завдання":
         homework = db_get_homework()
-        if not homework:
-            await update.message.reply_text("📭 Домашніх завдань немає.", reply_markup=student_keyboard())
+        # Тільки своя група
+        my_hw = [h for h in homework if group_matches(student_group, student_rank, h.get("group", ""))]
+        if not my_hw:
+            await update.message.reply_text("📭 Домашніх завдань для вашої групи немає.", reply_markup=student_keyboard())
         else:
-            msg = "📚 Домашні завдання:\n\n"
-            for i, h in enumerate(homework, 1):
+            msg = f"📚 Домашні завдання для групи {student_group}:\n\n"
+            for i, h in enumerate(my_hw, 1):
                 msg += f"{i}. [{h['group']}] {h['task']}\n   📅 До: {h['deadline']}\n\n"
             await update.message.reply_text(msg, reply_markup=student_keyboard())
 
@@ -496,6 +520,7 @@ async def student_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(
             f"✅ Моя відвідуваність\n\n"
             f"👤 {student_name}\n"
+            f"👥 Група: {student_group} | 🏅 {student_rank}\n"
             f"✔️ Був(ла): {present_count} занять\n"
             f"❌ Пропустив(ла): {absent_count} занять\n"
             f"📊 Відсоток: {percent}%",
@@ -514,12 +539,16 @@ async def student_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     elif text == "🏆 Турніри":
         tournaments = db_get_tournaments()
-        if not tournaments:
-            await update.message.reply_text("📭 Турнірів ще немає.", reply_markup=student_keyboard())
+        # Показуємо турніри для своєї групи + турніри для всіх
+        my_tournaments = [t for t in tournaments
+                          if group_matches(student_group, student_rank, t.get("for_group", ""))]
+        if not my_tournaments:
+            await update.message.reply_text("📭 Турнірів для вашої групи немає.", reply_markup=student_keyboard())
         else:
-            msg = "🏆 Заплановані турніри:\n\n"
-            for i, t in enumerate(tournaments, 1):
-                msg += f"{i}. {t['title']}\n   📅 {t['date']}\n   📍 {t['place']}\n   ℹ️ {t['info']}\n\n"
+            msg = "🏆 Турніри для вашої групи:\n\n"
+            for i, t in enumerate(my_tournaments, 1):
+                for_who = t.get("for_group", "Всі")
+                msg += f"{i}. {t['title']}\n   📅 {t['date']}\n   📍 {t['place']}\n   👥 Для: {for_who}\n   ℹ️ {t['info']}\n\n"
             await update.message.reply_text(msg, reply_markup=student_keyboard())
 
     return STUDENT_MENU
@@ -534,30 +563,36 @@ async def parent_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     text = update.message.text
     user_id = str(update.effective_user.id)
+    parent_info = db_get_parents().get(user_id, {})
+    parent_group = parent_info.get("group", "")
+    parent_rank = parent_info.get("rank", "")
 
     if text == "📅 Розклад занять":
         schedule = db_get_schedule()
-        if not schedule:
-            await update.message.reply_text("📭 Розклад ще не додано.", reply_markup=parent_keyboard())
+        my_schedule = [s for s in schedule if group_matches(parent_group, parent_rank, s.get("group", ""))]
+        if not my_schedule:
+            await update.message.reply_text("📭 Розклад для вашої групи ще не додано.", reply_markup=parent_keyboard())
         else:
             days_order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-            sorted_s = sorted(schedule, key=lambda x: days_order.index(x["day"]) if x["day"] in days_order else 9)
-            msg = "📅 Розклад занять:\n\n" + "".join(
+            sorted_s = sorted(my_schedule, key=lambda x: days_order.index(x["day"]) if x["day"] in days_order else 9)
+            child = parent_info.get("student", "")
+            msg = f"📅 Розклад занять{f' ({child})' if child else ''}:\n\n" + "".join(
                 f"📌 {s['day']} {s['time']} — {s['group']} ({s['place']})\n" for s in sorted_s)
             await update.message.reply_text(msg, reply_markup=parent_keyboard())
 
     elif text == "📚 Домашні завдання":
         homework = db_get_homework()
-        if not homework:
-            await update.message.reply_text("📭 Домашніх завдань немає.", reply_markup=parent_keyboard())
+        my_hw = [h for h in homework if group_matches(parent_group, parent_rank, h.get("group", ""))]
+        if not my_hw:
+            await update.message.reply_text("📭 Домашніх завдань для вашої групи немає.", reply_markup=parent_keyboard())
         else:
-            msg = "📚 Актуальні домашні завдання:\n\n"
-            for i, h in enumerate(homework, 1):
+            child = parent_info.get("student", "")
+            msg = f"📚 Домашні завдання{f' ({child})' if child else ''}:\n\n"
+            for i, h in enumerate(my_hw, 1):
                 msg += f"{i}. [{h['group']}] {h['task']}\n   📅 До: {h['deadline']}\n\n"
             await update.message.reply_text(msg, reply_markup=parent_keyboard())
 
     elif text == "✅ Відвідуваність дитини":
-        parent_info = db_get_parents().get(user_id, {})
         student_name = parent_info.get("student", "")
         if not student_name:
             await update.message.reply_text(
@@ -575,6 +610,7 @@ async def parent_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         percent = round(present_count / total * 100) if total > 0 else 0
         await update.message.reply_text(
             f"✅ Відвідуваність: {student_name}\n\n"
+            f"👥 Група: {parent_group} | 🏅 {parent_rank}\n"
             f"✔️ Був(ла): {present_count} занять\n"
             f"❌ Пропустив(ла): {absent_count} занять\n"
             f"📊 Відсоток: {percent}%",
@@ -583,12 +619,14 @@ async def parent_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     elif text == "🏆 Турніри":
         tournaments = db_get_tournaments()
-        if not tournaments:
-            await update.message.reply_text("📭 Турнірів ще немає.", reply_markup=parent_keyboard())
+        my_tournaments = [t for t in tournaments
+                          if group_matches(parent_group, parent_rank, t.get("for_group", ""))]
+        if not my_tournaments:
+            await update.message.reply_text("📭 Турнірів для вашої групи немає.", reply_markup=parent_keyboard())
         else:
-            msg = "🏆 Заплановані турніри:\n\n"
-            for i, t in enumerate(tournaments, 1):
-                msg += f"{i}. {t['title']}\n   📅 {t['date']}\n   📍 {t['place']}\n   ℹ️ {t['info']}\n\n"
+            msg = "🏆 Турніри:\n\n"
+            for i, t in enumerate(my_tournaments, 1):
+                msg += f"{i}. {t['title']}\n   📅 {t['date']}\n   📍 {t['place']}\n   👥 Для: {t.get('for_group','Всі')}\n   ℹ️ {t['info']}\n\n"
             await update.message.reply_text(msg, reply_markup=parent_keyboard())
 
     return PARENT_MENU
@@ -598,7 +636,6 @@ async def parent_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ─────────────────────────────────────────────
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_trainer(update):
-        # Перенаправляємо в правильне меню
         uid = str(update.effective_user.id)
         if uid in db_get_student_users():
             await update.message.reply_text("Ваше меню:", reply_markup=student_keyboard())
@@ -652,15 +689,18 @@ async def students_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             msg = "📋 Список учнів:\n\n"
             for i, s in enumerate(students, 1):
-                msg += f"{i}. {s['name']} — {s['level']}\n   👨‍👩‍👦 Батьки: {s['parent_phone']} | 👤 Учень: {s.get('student_phone','—')}\n\n"
+                msg += (f"{i}. {s['name']}\n"
+                        f"   🏅 {s.get('rank','—')} | 👥 {s.get('group','—')}\n"
+                        f"   👨‍👩‍👦 {s.get('parent_phone','—')} | 📱 {s.get('student_phone','—')}\n\n")
             await update.message.reply_text(msg, reply_markup=students_keyboard())
     elif text == "➕ Додати учня":
         await update.message.reply_text(
             "Введіть дані учня у форматі:\n"
-            "<b>Ім'я Прізвище | рівень | телефон батьків | телефон учня</b>\n\n"
-            "Приклад: Олег Іванов | початківець | +380991234567 | +380671234567\n\n"
-            "💡 Телефон учня потрібен для його реєстрації в боті",
-            parse_mode="HTML", reply_markup=back_to_students_keyboard()
+            "<b>Ім'я | Розряд | Група | Тел.батьків | Тел.учня</b>\n\n"
+            "Приклад:\nОлег Іванов | 1-2 розряд | 1-2 розряд | +380991234567 | +380671234567\n\n"
+            "💡 Розряд і Група можуть співпадати\n"
+            "💡 Тел.учня потрібен для його входу в бот",
+            parse_mode="HTML", reply_markup=back_to_keyboard("списку учнів")
         )
         return ADD_STUDENT
     elif text == "🗑 Видалити учня":
@@ -668,7 +708,9 @@ async def students_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not students:
             await update.message.reply_text("Список порожній.", reply_markup=students_keyboard())
             return STUDENTS_MENU
-        keyboard = [[InlineKeyboardButton(s["name"], callback_data=f"del_student_{i}")] for i, s in enumerate(students)]
+        keyboard = [[InlineKeyboardButton(
+            f"{s['name']} ({s.get('group','?')})", callback_data=f"del_student_{i}"
+        )] for i, s in enumerate(students)]
         await update.message.reply_text("Оберіть учня для видалення:", reply_markup=InlineKeyboardMarkup(keyboard))
     return STUDENTS_MENU
 
@@ -682,29 +724,29 @@ async def add_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STUDENTS_MENU
     try:
         parts = [p.strip() for p in text.split("|")]
-        logger.info(f"[ADD_STUDENT] parts: {parts}")
-        if len(parts) < 3:
-            raise ValueError(f"Потрібно мінімум 3 поля через |, отримано {len(parts)}")
+        if len(parts) < 4:
+            raise ValueError(f"Потрібно мінімум 4 поля через |, отримано {len(parts)}")
         student = {
-            "name": parts[0],
-            "level": parts[1],
-            "parent_phone": parts[2],
-            "student_phone": parts[3] if len(parts) > 3 else "",
-            "added": datetime.now().strftime("%d.%m.%Y")
+            "name":          parts[0],
+            "rank":          parts[1],
+            "group":         parts[2],
+            "parent_phone":  parts[3],
+            "student_phone": parts[4] if len(parts) > 4 else "",
+            "added":         datetime.now().strftime("%d.%m.%Y")
         }
         db_add_student(student)
-        logger.info(f"[ADD_STUDENT] ✅ Збережено: {student['name']}")
-        msg = f"✅ Учня {student['name']} успішно додано!\n\n"
+        msg = (f"✅ Учня {student['name']} успішно додано!\n\n"
+               f"🏅 Розряд: {student['rank']}\n"
+               f"👥 Група: {student['group']}\n")
         if student["student_phone"]:
-            msg += f"📱 Учень може увійти в бот використавши номер: {student['student_phone']}"
+            msg += f"\n📱 Учень може увійти через номер: {student['student_phone']}"
         else:
-            msg += "⚠️ Телефон учня не вказано — він не зможе зареєструватись самостійно"
+            msg += "\n⚠️ Телефон учня не вказано"
         await update.message.reply_text(msg, reply_markup=students_keyboard())
     except Exception as e:
-        logger.error(f"[ADD_STUDENT] ❌ {e}")
         await update.message.reply_text(
-            f"❌ Помилка: {e}\n\nФормат: <b>Ім'я | рівень | тел.батьків | тел.учня</b>",
-            parse_mode="HTML", reply_markup=back_to_students_keyboard()
+            f"❌ Помилка: {e}\n\nФормат:\n<b>Ім'я | Розряд | Група | Тел.батьків | Тел.учня</b>",
+            parse_mode="HTML", reply_markup=back_to_keyboard("списку учнів")
         )
     return STUDENTS_MENU
 
@@ -729,8 +771,10 @@ async def schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, reply_markup=schedule_keyboard())
     elif text == "➕ Додати заняття":
         await update.message.reply_text(
-            "Введіть заняття у форматі:\n<b>День | Час | Група | Місце</b>\n\nПриклад: Пн | 17:00 | Початківці | Зал №1",
-            parse_mode="HTML", reply_markup=back_to_schedule_keyboard()
+            "Введіть заняття у форматі:\n<b>День | Час | Група | Місце</b>\n\n"
+            "Приклад: Пн | 17:00 | 1-2 розряд | Зал №1\n\n"
+            "💡 Нагадування отримають тільки учні/батьки цієї групи",
+            parse_mode="HTML", reply_markup=back_to_keyboard("розкладу")
         )
         return ADD_SCHEDULE
     elif text == "🗑 Видалити заняття":
@@ -738,7 +782,9 @@ async def schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not schedule:
             await update.message.reply_text("Розклад порожній.", reply_markup=schedule_keyboard())
             return SCHEDULE_MENU
-        keyboard = [[InlineKeyboardButton(f"{s['day']} {s['time']} — {s['group']}", callback_data=f"del_schedule_{i}")] for i, s in enumerate(schedule)]
+        keyboard = [[InlineKeyboardButton(
+            f"{s['day']} {s['time']} — {s['group']}", callback_data=f"del_schedule_{i}"
+        )] for i, s in enumerate(schedule)]
         await update.message.reply_text("Оберіть заняття для видалення:", reply_markup=InlineKeyboardMarkup(keyboard))
     return SCHEDULE_MENU
 
@@ -753,17 +799,18 @@ async def add_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 4:
-            raise ValueError(f"Потрібно 4 поля через |, отримано {len(parts)}")
+            raise ValueError(f"Потрібно 4 поля")
         entry = {"day": parts[0], "time": parts[1], "group": parts[2], "place": parts[3]}
         db_add_schedule(entry)
         await update.message.reply_text(
-            f"✅ Заняття {entry['day']} {entry['time']} додано!\n🔔 Всі отримають нагадування за 2 год.",
+            f"✅ Заняття {entry['day']} {entry['time']} для групи {entry['group']} додано!\n"
+            f"🔔 Нагадування отримають тільки учні/батьки цієї групи.",
             reply_markup=schedule_keyboard()
         )
     except Exception as e:
         await update.message.reply_text(
             f"❌ Помилка: {e}\n\nФормат: <b>День | Час | Група | Місце</b>",
-            parse_mode="HTML", reply_markup=back_to_schedule_keyboard()
+            parse_mode="HTML", reply_markup=back_to_keyboard("розкладу")
         )
     return SCHEDULE_MENU
 
@@ -787,8 +834,10 @@ async def homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, reply_markup=homework_keyboard())
     elif text == "➕ Задати домашнє":
         await update.message.reply_text(
-            "Введіть завдання у форматі:\n<b>Група | Завдання | Дедлайн</b>\n\nПриклад: Початківці | Вивчити e4 e5 | 15.03.2025",
-            parse_mode="HTML", reply_markup=back_to_homework_keyboard()
+            "Введіть завдання у форматі:\n<b>Група | Завдання | Дедлайн</b>\n\n"
+            "Приклад: 1-2 розряд | Вивчити захист Філідора | 15.03.2025\n\n"
+            "💡 Сповіщення отримають тільки учні/батьки цієї групи",
+            parse_mode="HTML", reply_markup=back_to_keyboard("завдань")
         )
         return ADD_HOMEWORK
     elif text == "🗑 Видалити завдання":
@@ -796,7 +845,9 @@ async def homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not homework:
             await update.message.reply_text("Завдань немає.", reply_markup=homework_keyboard())
             return HOMEWORK_MENU
-        keyboard = [[InlineKeyboardButton(f"[{h['group']}] {h['task'][:30]}...", callback_data=f"del_hw_{i}")] for i, h in enumerate(homework)]
+        keyboard = [[InlineKeyboardButton(
+            f"[{h['group']}] {h['task'][:25]}...", callback_data=f"del_hw_{i}"
+        )] for i, h in enumerate(homework)]
         await update.message.reply_text("Оберіть завдання для видалення:", reply_markup=InlineKeyboardMarkup(keyboard))
     return HOMEWORK_MENU
 
@@ -811,31 +862,23 @@ async def add_homework(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 3:
-            raise ValueError(f"Потрібно 3 поля через |, отримано {len(parts)}")
-        hw = {"group": parts[0], "task": parts[1], "deadline": parts[2], "created": datetime.now().strftime("%d.%m.%Y")}
+            raise ValueError("Потрібно 3 поля")
+        hw = {"group": parts[0], "task": parts[1], "deadline": parts[2],
+              "created": datetime.now().strftime("%d.%m.%Y")}
         db_add_homework(hw)
-        sent = 0
-        # Надсилаємо батькам
-        for pid in db_get_parents():
-            try:
-                await context.bot.send_message(chat_id=int(pid),
-                    text=f"📚 Нове домашнє завдання!\n\n👥 Група: {hw['group']}\n📝 {hw['task']}\n📅 До: {hw['deadline']}")
-                sent += 1
-            except Exception:
-                pass
-        # Надсилаємо учням
-        for uid in db_get_student_users():
-            try:
-                await context.bot.send_message(chat_id=int(uid),
-                    text=f"📚 Нове домашнє завдання!\n\n👥 Група: {hw['group']}\n📝 {hw['task']}\n📅 До: {hw['deadline']}")
-                sent += 1
-            except Exception:
-                pass
-        await update.message.reply_text(f"✅ Завдання додано! Надіслано {sent} повідомлень.", reply_markup=homework_keyboard())
+        notify_text = (f"📚 Нове домашнє завдання!\n\n"
+                       f"👥 Група: {hw['group']}\n"
+                       f"📝 {hw['task']}\n"
+                       f"📅 До: {hw['deadline']}")
+        sent = await notify_group(context, hw["group"], notify_text)
+        await update.message.reply_text(
+            f"✅ Завдання для групи {hw['group']} додано!\n📨 Надіслано {sent} повідомлень.",
+            reply_markup=homework_keyboard()
+        )
     except Exception as e:
         await update.message.reply_text(
             f"❌ Помилка: {e}\n\nФормат: <b>Група | Завдання | Дедлайн</b>",
-            parse_mode="HTML", reply_markup=back_to_homework_keyboard()
+            parse_mode="HTML", reply_markup=back_to_keyboard("завдань")
         )
     return HOMEWORK_MENU
 
@@ -859,8 +902,9 @@ async def news_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, reply_markup=news_keyboard())
     elif text == "➕ Додати новину":
         await update.message.reply_text(
-            "Введіть новину у форматі:\n<b>Заголовок | Текст</b>",
-            parse_mode="HTML", reply_markup=back_to_news_keyboard()
+            "Введіть новину у форматі:\n<b>Заголовок | Текст</b>\n\n"
+            "💡 Новини надсилаються ВСІМ батькам і учням",
+            parse_mode="HTML", reply_markup=back_to_keyboard("новин")
         )
         return ADD_NEWS
     elif text == "🗑 Видалити новину":
@@ -883,27 +927,19 @@ async def add_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 2:
-            raise ValueError(f"Потрібно 2 поля через |")
+            raise ValueError("Потрібно 2 поля")
         news_item = {"title": parts[0], "text": parts[1], "date": datetime.now().strftime("%d.%m.%Y")}
         db_add_news(news_item)
-        sent = 0
-        for pid in db_get_parents():
-            try:
-                await context.bot.send_message(chat_id=int(pid), text=f"📢 {news_item['title']}\n\n{news_item['text']}")
-                sent += 1
-            except Exception:
-                pass
-        for uid in db_get_student_users():
-            try:
-                await context.bot.send_message(chat_id=int(uid), text=f"📢 {news_item['title']}\n\n{news_item['text']}")
-                sent += 1
-            except Exception:
-                pass
-        await update.message.reply_text(f"✅ Новину опубліковано! Надіслано {sent} повідомлень.", reply_markup=news_keyboard())
+        notify_text = f"📢 {news_item['title']}\n\n{news_item['text']}"
+        sent = await notify_all(context, notify_text)
+        await update.message.reply_text(
+            f"✅ Новину опубліковано! Надіслано {sent} повідомлень.",
+            reply_markup=news_keyboard()
+        )
     except Exception as e:
         await update.message.reply_text(
             f"❌ Помилка: {e}\n\nФормат: <b>Заголовок | Текст</b>",
-            parse_mode="HTML", reply_markup=back_to_news_keyboard()
+            parse_mode="HTML", reply_markup=back_to_keyboard("новин")
         )
     return NEWS_MENU
 
@@ -927,8 +963,9 @@ async def materials_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, reply_markup=materials_keyboard())
     elif text == "➕ Додати матеріал":
         await update.message.reply_text(
-            "Введіть матеріал у форматі:\n<b>Назва | Посилання | Категорія</b>\n\nПриклад: Збірник задач | https://example.com | Задачники",
-            parse_mode="HTML", reply_markup=back_to_materials_keyboard()
+            "Введіть матеріал у форматі:\n<b>Назва | Посилання | Категорія</b>\n\n"
+            "Приклад: Збірник задач | https://example.com | Задачники",
+            parse_mode="HTML", reply_markup=back_to_keyboard("матеріалів")
         )
         return ADD_MATERIAL
     elif text == "🗑 Видалити матеріал":
@@ -951,14 +988,15 @@ async def add_material(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 3:
-            raise ValueError(f"Потрібно 3 поля через |")
-        mat = {"title": parts[0], "link": parts[1], "category": parts[2], "date": datetime.now().strftime("%d.%m.%Y")}
+            raise ValueError("Потрібно 3 поля")
+        mat = {"title": parts[0], "link": parts[1], "category": parts[2],
+               "date": datetime.now().strftime("%d.%m.%Y")}
         db_add_material(mat)
         await update.message.reply_text(f"✅ Матеріал '{mat['title']}' додано!", reply_markup=materials_keyboard())
     except Exception as e:
         await update.message.reply_text(
             f"❌ Помилка: {e}\n\nФормат: <b>Назва | Посилання | Категорія</b>",
-            parse_mode="HTML", reply_markup=back_to_materials_keyboard()
+            parse_mode="HTML", reply_markup=back_to_keyboard("матеріалів")
         )
     return MATERIALS_MENU
 
@@ -976,15 +1014,19 @@ async def tournaments_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not tournaments:
             await update.message.reply_text("📭 Турнірів немає.", reply_markup=tournaments_keyboard())
         else:
-            msg = "🏆 Заплановані турніри:\n\n"
+            msg = "🏆 Турніри:\n\n"
             for i, t in enumerate(tournaments, 1):
-                msg += f"{i}. {t['title']}\n   📅 {t['date']}\n   📍 {t['place']}\n   ℹ️ {t['info']}\n\n"
+                msg += (f"{i}. {t['title']}\n"
+                        f"   📅 {t['date']} | 📍 {t['place']}\n"
+                        f"   👥 Для: {t.get('for_group', 'Всі')}\n"
+                        f"   ℹ️ {t['info']}\n\n")
             await update.message.reply_text(msg, reply_markup=tournaments_keyboard())
     elif text == "➕ Додати турнір":
         await update.message.reply_text(
-            "Введіть турнір у форматі:\n<b>Назва | Дата | Місце | Інфо</b>\n\n"
-            "Приклад: Кубок міста | 15.04.2025 | ДЮСШ №3 | Реєстрація до 10.04",
-            parse_mode="HTML", reply_markup=back_to_tournaments_keyboard()
+            "Введіть турнір у форматі:\n<b>Назва | Дата | Місце | Для кого | Інфо</b>\n\n"
+            "Приклади:\nКубок міста | 15.04.2025 | ДЮСШ №3 | 1-2 розряд | Реєстрація до 10.04\n"
+            "Відкритий чемпіонат | 20.04.2025 | Фредра 1 | Всі | Для всіх груп",
+            parse_mode="HTML", reply_markup=back_to_keyboard("турнірів")
         )
         return ADD_TOURNAMENT
     elif text == "🗑 Видалити турнір":
@@ -992,7 +1034,9 @@ async def tournaments_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not tournaments:
             await update.message.reply_text("Турнірів немає.", reply_markup=tournaments_keyboard())
             return TOURNAMENTS_MENU
-        keyboard = [[InlineKeyboardButton(t["title"], callback_data=f"del_tournament_{i}")] for i, t in enumerate(tournaments)]
+        keyboard = [[InlineKeyboardButton(
+            f"{t['title']} ({t.get('for_group','Всі')})", callback_data=f"del_tournament_{i}"
+        )] for i, t in enumerate(tournaments)]
         await update.message.reply_text("Оберіть турнір для видалення:", reply_markup=InlineKeyboardMarkup(keyboard))
     return TOURNAMENTS_MENU
 
@@ -1006,29 +1050,23 @@ async def add_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return TOURNAMENTS_MENU
     try:
         parts = [p.strip() for p in text.split("|")]
-        if len(parts) < 4:
-            raise ValueError(f"Потрібно 4 поля через |")
-        t = {"title": parts[0], "date": parts[1], "place": parts[2], "info": parts[3]}
+        if len(parts) < 5:
+            raise ValueError("Потрібно 5 полів")
+        t = {"title": parts[0], "date": parts[1], "place": parts[2],
+             "for_group": parts[3], "info": parts[4]}
         db_add_tournament(t)
-        sent = 0
-        notify_text = f"🏆 Новий турнір!\n\n{t['title']}\n📅 {t['date']}\n📍 {t['place']}\nℹ️ {t['info']}"
-        for pid in db_get_parents():
-            try:
-                await context.bot.send_message(chat_id=int(pid), text=notify_text)
-                sent += 1
-            except Exception:
-                pass
-        for uid in db_get_student_users():
-            try:
-                await context.bot.send_message(chat_id=int(uid), text=notify_text)
-                sent += 1
-            except Exception:
-                pass
-        await update.message.reply_text(f"✅ Турнір додано! Надіслано {sent} повідомлень.", reply_markup=tournaments_keyboard())
+        notify_text = (f"🏆 Новий турнір!\n\n{t['title']}\n"
+                       f"📅 {t['date']}\n📍 {t['place']}\n"
+                       f"👥 Для: {t['for_group']}\nℹ️ {t['info']}")
+        sent = await notify_group(context, t["for_group"], notify_text)
+        await update.message.reply_text(
+            f"✅ Турнір додано!\n👥 Для: {t['for_group']}\n📨 Надіслано {sent} повідомлень.",
+            reply_markup=tournaments_keyboard()
+        )
     except Exception as e:
         await update.message.reply_text(
-            f"❌ Помилка: {e}\n\nФормат: <b>Назва | Дата | Місце | Інфо</b>",
-            parse_mode="HTML", reply_markup=back_to_tournaments_keyboard()
+            f"❌ Помилка: {e}\n\nФормат: <b>Назва | Дата | Місце | Для кого | Інфо</b>",
+            parse_mode="HTML", reply_markup=back_to_keyboard("турнірів")
         )
     return TOURNAMENTS_MENU
 
@@ -1048,19 +1086,21 @@ async def chat_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             msg = "👥 Зареєстровані батьки:\n\n"
             for pid, info in parents.items():
-                student_link = info.get('student', 'не прив\'язано')
-                msg += f"• {info['name']} → {student_link} (ID: {pid})\n"
+                msg += (f"• {info['name']}\n"
+                        f"  👤 {info.get('student','—')} | 👥 {info.get('group','—')}\n\n")
             await update.message.reply_text(msg, reply_markup=chat_keyboard())
     elif text == "🔗 Прив'язати батька до учня":
         parents = db_get_parents()
         students = db_get_students()
         if not parents:
-            await update.message.reply_text("📭 Жоден батько не зареєструвався.", reply_markup=chat_keyboard())
+            await update.message.reply_text("📭 Батьків немає.", reply_markup=chat_keyboard())
             return CHAT_MENU
         if not students:
             await update.message.reply_text("📭 Спочатку додайте учнів.", reply_markup=chat_keyboard())
             return CHAT_MENU
-        keyboard = [[InlineKeyboardButton(f"{info['name']} → {info.get('student','—')}", callback_data=f"link_parent_{pid}")] for pid, info in parents.items()]
+        keyboard = [[InlineKeyboardButton(
+            f"{info['name']} → {info.get('student','—')}", callback_data=f"link_parent_{pid}"
+        )] for pid, info in parents.items()]
         await update.message.reply_text("Оберіть батька для прив'язки:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif text == "📣 Розіслати всім батькам":
         await update.message.reply_text("Введіть повідомлення для розсилки:", reply_markup=back_keyboard())
@@ -1075,7 +1115,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = failed = 0
     for pid in db_get_parents():
         try:
-            await context.bot.send_message(chat_id=int(pid), text=f"📣 Повідомлення від тренера:\n\n{text}")
+            await context.bot.send_message(chat_id=int(pid), text=f"📣 Від тренера:\n\n{text}")
             sent += 1
         except Exception:
             failed += 1
@@ -1148,12 +1188,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
+    # ── Прив'язка батька ──
     if data.startswith("link_parent_"):
         pid = data.replace("link_parent_", "")
         context.user_data["linking_parent_id"] = pid
         students = db_get_students()
         parent_name = db_get_parents().get(pid, {}).get("name", "?")
-        keyboard = [[InlineKeyboardButton(s["name"], callback_data=f"link_student_{i}")] for i, s in enumerate(students)]
+        keyboard = [[InlineKeyboardButton(
+            f"{s['name']} ({s.get('group','?')})", callback_data=f"link_student_{i}"
+        )] for i, s in enumerate(students)]
         await query.edit_message_text(
             f"👤 Батько: <b>{parent_name}</b>\n\nОберіть учня:",
             parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
@@ -1166,16 +1209,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Помилка. Спробуйте знову.")
             return
         students = db_get_students()
-        student_name = students[idx]["name"]
-        db_link_parent_to_student(pid, student_name)
+        student = students[idx]
+        db_link_parent_to_student(pid, student["name"], student.get("group",""), student.get("rank",""))
         parent_name = db_get_parents().get(pid, {}).get("name", "?")
         try:
-            await context.bot.send_message(chat_id=int(pid),
-                text=f"✅ Тренер прив'язав вас до учня: <b>{student_name}</b>", parse_mode="HTML")
+            await context.bot.send_message(
+                chat_id=int(pid),
+                text=f"✅ Тренер прив'язав вас до учня: <b>{student['name']}</b>\n"
+                     f"👥 Група: {student.get('group','')}\n"
+                     f"🏅 Розряд: {student.get('rank','')}",
+                parse_mode="HTML"
+            )
         except Exception:
             pass
-        await query.edit_message_text(f"✅ Готово!\n\n👨‍👩‍👦 {parent_name} → 🎓 {student_name}")
+        await query.edit_message_text(
+            f"✅ Готово!\n\n👨‍👩‍👦 {parent_name} → 🎓 {student['name']}\n"
+            f"👥 Група: {student.get('group','')} | 🏅 {student.get('rank','')}"
+        )
 
+    # ── Відвідуваність ──
     elif data.startswith("att_present_"):
         idx = int(data.split("_")[-1])
         name = db_get_students()[idx]["name"]
@@ -1203,23 +1255,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sname = info.get("student", "")
             if sname and sname in att.get("absent", []):
                 try:
-                    await context.bot.send_message(chat_id=int(pid),
-                        text=f"⚠️ {sname} сьогодні ({date}) не з'явився(лась) на занятті.")
+                    await context.bot.send_message(
+                        chat_id=int(pid),
+                        text=f"⚠️ {sname} сьогодні ({date}) не з'явився(лась) на занятті."
+                    )
                 except Exception:
                     pass
-        # Сповіщаємо учнів про свою відсутність
+        # Сповіщаємо учнів
         for uid, info in db_get_student_users().items():
             sname = info.get("student_name", "")
             if sname and sname in att.get("absent", []):
                 try:
-                    await context.bot.send_message(chat_id=int(uid),
-                        text=f"⚠️ Тренер відмітив тебе відсутнім сьогодні ({date}).")
+                    await context.bot.send_message(
+                        chat_id=int(uid),
+                        text=f"⚠️ Тренер відмітив тебе відсутнім сьогодні ({date})."
+                    )
                 except Exception:
                     pass
         present = ", ".join(att.get("present", [])) or "—"
         absent  = ", ".join(att.get("absent",  [])) or "—"
         await query.edit_message_text(f"✅ Відвідуваність збережено!\n\n📅 {date}\n✅ {present}\n❌ {absent}")
 
+    # ── Видалення ──
     elif data.startswith("del_student_"):
         idx = int(data.split("_")[-1])
         students = db_get_students()
@@ -1236,7 +1293,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 0 <= idx < len(schedule):
             s = schedule[idx]
             db_delete_schedule(idx)
-            await query.edit_message_text(f"🗑 Заняття {s['day']} {s['time']} видалено.")
+            await query.edit_message_text(f"🗑 Заняття {s['day']} {s['time']} ({s['group']}) видалено.")
         else:
             await query.edit_message_text("❌ Не знайдено.")
 
@@ -1294,27 +1351,27 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CHOOSE_ROLE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_role)],
-            REGISTER_STUDENT:[MessageHandler(filters.TEXT & ~filters.COMMAND, register_student)],
-            MAIN_MENU:       [MessageHandler(filters.TEXT & ~filters.COMMAND, main_menu_handler)],
-            PARENT_MENU:     [MessageHandler(filters.TEXT & ~filters.COMMAND, parent_menu_handler)],
-            STUDENT_MENU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, student_menu_handler)],
-            STUDENTS_MENU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, students_menu)],
-            ADD_STUDENT:     [MessageHandler(filters.TEXT & ~filters.COMMAND, add_student)],
-            SCHEDULE_MENU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_menu)],
-            ADD_SCHEDULE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, add_schedule)],
-            HOMEWORK_MENU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, homework_menu)],
-            ADD_HOMEWORK:    [MessageHandler(filters.TEXT & ~filters.COMMAND, add_homework)],
-            NEWS_MENU:       [MessageHandler(filters.TEXT & ~filters.COMMAND, news_menu)],
-            ADD_NEWS:        [MessageHandler(filters.TEXT & ~filters.COMMAND, add_news)],
-            MATERIALS_MENU:  [MessageHandler(filters.TEXT & ~filters.COMMAND, materials_menu)],
-            ADD_MATERIAL:    [MessageHandler(filters.TEXT & ~filters.COMMAND, add_material)],
-            CHAT_MENU:       [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_menu)],
-            BROADCAST_MSG:   [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message)],
-            LINK_PARENT:     [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_menu)],
-            ATTENDANCE_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, attendance_menu)],
-            TOURNAMENTS_MENU:[MessageHandler(filters.TEXT & ~filters.COMMAND, tournaments_menu)],
-            ADD_TOURNAMENT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, add_tournament)],
+            CHOOSE_ROLE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_role)],
+            REGISTER_STUDENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_student)],
+            MAIN_MENU:        [MessageHandler(filters.TEXT & ~filters.COMMAND, main_menu_handler)],
+            PARENT_MENU:      [MessageHandler(filters.TEXT & ~filters.COMMAND, parent_menu_handler)],
+            STUDENT_MENU:     [MessageHandler(filters.TEXT & ~filters.COMMAND, student_menu_handler)],
+            STUDENTS_MENU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, students_menu)],
+            ADD_STUDENT:      [MessageHandler(filters.TEXT & ~filters.COMMAND, add_student)],
+            SCHEDULE_MENU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_menu)],
+            ADD_SCHEDULE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, add_schedule)],
+            HOMEWORK_MENU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, homework_menu)],
+            ADD_HOMEWORK:     [MessageHandler(filters.TEXT & ~filters.COMMAND, add_homework)],
+            NEWS_MENU:        [MessageHandler(filters.TEXT & ~filters.COMMAND, news_menu)],
+            ADD_NEWS:         [MessageHandler(filters.TEXT & ~filters.COMMAND, add_news)],
+            MATERIALS_MENU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, materials_menu)],
+            ADD_MATERIAL:     [MessageHandler(filters.TEXT & ~filters.COMMAND, add_material)],
+            CHAT_MENU:        [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_menu)],
+            BROADCAST_MSG:    [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message)],
+            LINK_PARENT:      [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_menu)],
+            ATTENDANCE_MENU:  [MessageHandler(filters.TEXT & ~filters.COMMAND, attendance_menu)],
+            TOURNAMENTS_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, tournaments_menu)],
+            ADD_TOURNAMENT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, add_tournament)],
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True
@@ -1324,7 +1381,7 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.job_queue.run_repeating(send_reminders, interval=3600, first=10)
 
-    print("♟️ Chess Trainer Bot v4.0 запущено!")
+    print("♟️ Chess Trainer Bot v5.0 запущено!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
