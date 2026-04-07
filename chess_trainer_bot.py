@@ -1,11 +1,9 @@
 """
-♟️ Chess Trainer Bot v5.2 — FIXED FOR PYTHON 3.14 + RENDER
-НОВЕ: Async main + Health server
+♟️ Chess Trainer Bot v5.3 — FIXED FOR PYTHON 3.14 + RENDER
 """
 
 import logging
 import os
-import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from copy import deepcopy
@@ -1326,9 +1324,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ Помилка: {str(e)[:50]}")
 
 # ─────────────────────────────────────────────
-# ЗАПУСК — ASYNC MAIN ДЛЯ PYTHON 3.14
+# ЗАПУСК
 # ─────────────────────────────────────────────
-async def main():
+def main():
     try:
         init_mongo()
     except Exception as e:
@@ -1339,7 +1337,7 @@ async def main():
         logger.error("❌ BOT_TOKEN не знайдено!")
         return
 
-    # ✅ Запускаємо health server для Render
+    # ✅ Запускаємо health server в окремому потоці
     threading.Thread(target=run_health_server, daemon=True).start()
 
     app = Application.builder().token(BOT_TOKEN).build()
@@ -1377,9 +1375,9 @@ async def main():
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.job_queue.run_repeating(send_reminders, interval=3600, first=10)
 
-    logger.info("♟️ Chess Trainer Bot v5.2 запущено!")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    logger.info("♟️ Chess Trainer Bot v5.3 запущено!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
