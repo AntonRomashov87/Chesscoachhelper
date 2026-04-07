@@ -5,6 +5,8 @@
 
 import logging
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from copy import deepcopy
 from datetime import datetime
 from pymongo import MongoClient
@@ -67,7 +69,7 @@ def col(name):
     return mdb[name]
 
 # ─────────────────────────────────────────────
-# DB HELPERS (ВИПРАВЛЕНО: використовуємо ID замість індексу)
+# DB HELPERS
 # ─────────────────────────────────────────────
 
 def db_get_students() -> list:
@@ -77,7 +79,6 @@ def db_add_student(student: dict):
     col("students").insert_one(deepcopy(student))
 
 def db_delete_student(name: str):
-    """Видаляємо за іменем, а не за індексом"""
     col("students").delete_one({"name": name})
 
 def db_find_student_by_phone(phone: str):
@@ -90,7 +91,6 @@ def db_add_schedule(entry: dict):
     col("schedule").insert_one(deepcopy(entry))
 
 def db_delete_schedule(day: str, time: str, group: str):
-    """Видаляємо за параметрами, а не за індексом"""
     col("schedule").delete_one({"day": day, "time": time, "group": group})
 
 def db_get_homework() -> list:
@@ -100,7 +100,6 @@ def db_add_homework(hw: dict):
     col("homework").insert_one(deepcopy(hw))
 
 def db_delete_homework(group: str, task: str):
-    """Видаляємо за групою і завданням"""
     col("homework").delete_one({"group": group, "task": task})
 
 def db_get_news() -> list:
@@ -110,7 +109,6 @@ def db_add_news(item: dict):
     col("news").insert_one(deepcopy(item))
 
 def db_delete_news(title: str, date: str):
-    """Видаляємо за заголовком і датою"""
     col("news").delete_one({"title": title, "date": date})
 
 def db_get_materials() -> list:
@@ -120,7 +118,6 @@ def db_add_material(mat: dict):
     col("materials").insert_one(deepcopy(mat))
 
 def db_delete_material(title: str, link: str):
-    """Видаляємо за заголовком і посиланням"""
     col("materials").delete_one({"title": title, "link": link})
 
 def db_get_tournaments() -> list:
@@ -130,7 +127,6 @@ def db_add_tournament(t: dict):
     col("tournaments").insert_one(deepcopy(t))
 
 def db_delete_tournament(title: str, date: str):
-    """Видаляємо за заголовком і датою"""
     col("tournaments").delete_one({"title": title, "date": date})
 
 def db_get_parents() -> dict:
@@ -187,10 +183,26 @@ def db_save_attendance(key: str, record: dict):
     col("attendance").update_one({"key": key}, {"$set": data}, upsert=True)
 
 # ─────────────────────────────────────────────
+# HEALTH SERVER ДЛЯ RENDER
+# ─────────────────────────────────────────────
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    logger.info(f"✅ Health server запущено на порту {port}")
+    server.serve_forever()
+
+# ─────────────────────────────────────────────
 # HELPERS — групові розсилки
 # ─────────────────────────────────────────────
 def group_matches(user_group: str, user_rank: str, target_group: str) -> bool:
-    """Перевіряє чи підходить користувач під цільову групу розсилки."""
     if not target_group or target_group.lower() in ("всі", "all", ""):
         return True
     target_lower = target_group.lower()
@@ -200,7 +212,6 @@ def group_matches(user_group: str, user_rank: str, target_group: str) -> bool:
             target_lower in user_rank.lower())
 
 async def notify_group(context, target_group: str, text: str):
-    """Надсилає повідомлення батькам і учням відповідної групи."""
     sent = 0
     for pid, info in db_get_parents().items():
         if group_matches(info.get("group", ""), info.get("rank", ""), target_group):
@@ -219,7 +230,6 @@ async def notify_group(context, target_group: str, text: str):
     return sent
 
 async def notify_all(context, text: str):
-    """Надсилає всім батькам і учням."""
     return await notify_group(context, "", text)
 
 # ─────────────────────────────────────────────
@@ -318,7 +328,6 @@ def role_keyboard():
 DAYS_UA_TO_NUM = {"Пн": 0, "Вт": 1, "Ср": 2, "Чт": 3, "Пт": 4, "Сб": 5, "Нд": 6}
 
 async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
-    """Щогодини перевіряє розклад і надсилає нагадування за 2 год ТІЛЬКИ своїй групі."""
     try:
         now = datetime.now()
         total_now_mins = now.hour * 60 + now.minute
@@ -651,7 +660,7 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 # ─────────────────────────────────────────────
-# УЧНІ (ТРЕНЕР) — ВИПРАВЛЕНО
+# УЧНІ (ТРЕНЕР)
 # ─────────────────────────────────────────────
 async def students_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_trainer(update): return ConversationHandler.END
@@ -728,7 +737,7 @@ async def add_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return STUDENTS_MENU
 
 # ─────────────────────────────────────────────
-# РОЗКЛАД — ВИПРАВЛЕНО
+# РОЗКЛАД
 # ─────────────────────────────────────────────
 async def schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_trainer(update): return ConversationHandler.END
@@ -760,7 +769,7 @@ async def schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Розклад порожній.", reply_markup=schedule_keyboard())
             return SCHEDULE_MENU
         keyboard = [[InlineKeyboardButton(
-            f"{s['day']} {s['time']} — {s['group']}", 
+            f"{s['day']} {s['time']} — {s['group']}",
             callback_data=f"del_schedule_{s['day']}_{s['time']}_{s['group']}"
         )] for s in schedule]
         await update.message.reply_text("Оберіть заняття для видалення:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -799,7 +808,7 @@ async def add_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SCHEDULE_MENU
 
 # ─────────────────────────────────────────────
-# ДОМАШНІ ЗАВДАННЯ — ВИПРАВЛЕНО
+# ДОМАШНІ ЗАВДАННЯ
 # ─────────────────────────────────────────────
 async def homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_trainer(update): return ConversationHandler.END
@@ -867,7 +876,7 @@ async def add_homework(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return HOMEWORK_MENU
 
 # ─────────────────────────────────────────────
-# НОВИНИ — ВИПРАВЛЕНО
+# НОВИНИ
 # ─────────────────────────────────────────────
 async def news_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_trainer(update): return ConversationHandler.END
@@ -928,7 +937,7 @@ async def add_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return NEWS_MENU
 
 # ─────────────────────────────────────────────
-# МАТЕРІАЛИ — ВИПРАВЛЕНО
+# МАТЕРІАЛИ
 # ─────────────────────────────────────────────
 async def materials_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_trainer(update): return ConversationHandler.END
@@ -985,7 +994,7 @@ async def add_material(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MATERIALS_MENU
 
 # ─────────────────────────────────────────────
-# ТУРНІРИ — ВИПРАВЛЕНО
+# ТУРНІРИ
 # ─────────────────────────────────────────────
 async def tournaments_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_trainer(update): return ConversationHandler.END
@@ -1165,7 +1174,7 @@ async def attendance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ATTENDANCE_MENU
 
 # ─────────────────────────────────────────────
-# CALLBACK HANDLER — ВИПРАВЛЕНО
+# CALLBACK HANDLER
 # ─────────────────────────────────────────────
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1173,7 +1182,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     try:
-        # ── Прив'язка батька ──
         if data.startswith("link_parent_"):
             pid = data.replace("link_parent_", "")
             context.user_data["linking_parent_id"] = pid
@@ -1215,13 +1223,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"👥 Група: {student.get('group','')} | 🏅 {student.get('rank','')}"
             )
 
-        # ── Відвідуваність ──
         elif data.startswith("att_present_"):
             name = data.replace("att_present_", "")
             att = context.user_data.get("attendance_today", {"date": "", "present": [], "absent": []})
-            if name not in att["present"]: 
+            if name not in att["present"]:
                 att["present"].append(name)
-            if name in att["absent"]: 
+            if name in att["absent"]:
                 att["absent"].remove(name)
             context.user_data["attendance_today"] = att
             await query.answer(f"✅ {name} — присутній(я)")
@@ -1229,9 +1236,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("att_absent_"):
             name = data.replace("att_absent_", "")
             att = context.user_data.get("attendance_today", {"date": "", "present": [], "absent": []})
-            if name not in att["absent"]: 
+            if name not in att["absent"]:
                 att["absent"].append(name)
-            if name in att["present"]: 
+            if name in att["present"]:
                 att["present"].remove(name)
             context.user_data["attendance_today"] = att
             await query.answer(f"❌ {name} — відсутній(я)")
@@ -1240,7 +1247,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             att = context.user_data.get("attendance_today", {})
             date = att.get("date", datetime.now().strftime("%d.%m.%Y"))
             db_save_attendance(date.replace(".", "-"), att)
-            # Сповіщаємо батьків відсутніх
             for pid, info in db_get_parents().items():
                 sname = info.get("student", "")
                 if sname and sname in att.get("absent", []):
@@ -1251,7 +1257,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception:
                         pass
-            # Сповіщаємо учнів
             for uid, info in db_get_student_users().items():
                 sname = info.get("student_name", "")
                 if sname and sname in att.get("absent", []):
@@ -1266,7 +1271,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             absent  = ", ".join(att.get("absent",  [])) or "—"
             await query.edit_message_text(f"✅ Відвідуваність збережено!\n\n📅 {date}\n✅ {present}\n❌ {absent}")
 
-        # ── Видалення ──
         elif data.startswith("del_student_"):
             name = data.replace("del_student_", "")
             db_delete_student(name)
@@ -1334,6 +1338,9 @@ def main():
     if not BOT_TOKEN:
         logger.error("❌ BOT_TOKEN не знайдено!")
         return
+
+    # ✅ Запускаємо health server для Render
+    threading.Thread(target=run_health_server, daemon=True).start()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
