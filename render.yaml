@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: chess-trainer-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
@@ -8,4 +8,6 @@ services:
       - key: BOT_TOKEN
         sync: false
       - key: TRAINER_ID
+        sync: false
+      - key: MONGODB_URI
         sync: false
