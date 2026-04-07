@@ -1,5 +1,5 @@
 """
-♟️ Chess Trainer Bot v5.3 — FIXED FOR PYTHON 3.14 + RENDER
+♟️ Chess Trainer Bot v5.3 — FIXED FOR PYTHON-TELEGRAM-BOT 20.7 + RENDER
 """
 
 import logging
@@ -11,7 +11,7 @@ from datetime import datetime
 from pymongo import MongoClient
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
+    Updater, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters, ConversationHandler
 )
 
@@ -1340,7 +1340,9 @@ def main():
     # ✅ Запускаємо health server в окремому потоці
     threading.Thread(target=run_health_server, daemon=True).start()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    # ✅ PYTHON-TELEGRAM-BOT v20.7 STYLE
+    updater = Updater(token=BOT_TOKEN)
+    dispatcher = updater.dispatcher
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -1371,12 +1373,12 @@ def main():
         allow_reentry=True
     )
 
-    app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    app.job_queue.run_repeating(send_reminders, interval=3600, first=10)
+    dispatcher.add_handler(conv_handler)
+    dispatcher.add_handler(CallbackQueryHandler(callback_handler))
+    updater.job_queue.run_repeating(send_reminders, interval=3600, first=10)
 
-    logger.info("♟️ Chess Trainer Bot v5.3 запущено!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    logger.info("♟️ Chess Trainer Bot v5.3 запущено (python-telegram-bot v20.7)!")
+    updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
