@@ -1340,34 +1340,34 @@ def main():
     # ✅ Запускаємо health server в окремому потоці
     threading.Thread(target=run_health_server, daemon=True).start()
 
-    # ✅ PYTHON-TELEGRAM-BOT v20.7 STYLE
-    updater = Updater(BOT_TOKEN)
+    # ✅ PYTHON-TELEGRAM-BOT v13.15 STYLE
+    updater = Updater(BOT_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CHOOSE_ROLE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_role)],
-            REGISTER_STUDENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_student)],
-            MAIN_MENU:        [MessageHandler(filters.TEXT & ~filters.COMMAND, main_menu_handler)],
-            PARENT_MENU:      [MessageHandler(filters.TEXT & ~filters.COMMAND, parent_menu_handler)],
-            STUDENT_MENU:     [MessageHandler(filters.TEXT & ~filters.COMMAND, student_menu_handler)],
-            STUDENTS_MENU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, students_menu)],
-            ADD_STUDENT:      [MessageHandler(filters.TEXT & ~filters.COMMAND, add_student)],
-            SCHEDULE_MENU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_menu)],
-            ADD_SCHEDULE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, add_schedule)],
-            HOMEWORK_MENU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, homework_menu)],
-            ADD_HOMEWORK:     [MessageHandler(filters.TEXT & ~filters.COMMAND, add_homework)],
-            NEWS_MENU:        [MessageHandler(filters.TEXT & ~filters.COMMAND, news_menu)],
-            ADD_NEWS:         [MessageHandler(filters.TEXT & ~filters.COMMAND, add_news)],
-            MATERIALS_MENU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, materials_menu)],
-            ADD_MATERIAL:     [MessageHandler(filters.TEXT & ~filters.COMMAND, add_material)],
-            CHAT_MENU:        [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_menu)],
-            BROADCAST_MSG:    [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message)],
-            LINK_PARENT:      [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_menu)],
-            ATTENDANCE_MENU:  [MessageHandler(filters.TEXT & ~filters.COMMAND, attendance_menu)],
-            TOURNAMENTS_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, tournaments_menu)],
-            ADD_TOURNAMENT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, add_tournament)],
+            CHOOSE_ROLE:      [MessageHandler(filters.text & ~filters.command, choose_role)],
+            REGISTER_STUDENT: [MessageHandler(filters.text & ~filters.command, register_student)],
+            MAIN_MENU:        [MessageHandler(filters.text & ~filters.command, main_menu_handler)],
+            PARENT_MENU:      [MessageHandler(filters.text & ~filters.command, parent_menu_handler)],
+            STUDENT_MENU:     [MessageHandler(filters.text & ~filters.command, student_menu_handler)],
+            STUDENTS_MENU:    [MessageHandler(filters.text & ~filters.command, students_menu)],
+            ADD_STUDENT:      [MessageHandler(filters.text & ~filters.command, add_student)],
+            SCHEDULE_MENU:    [MessageHandler(filters.text & ~filters.command, schedule_menu)],
+            ADD_SCHEDULE:     [MessageHandler(filters.text & ~filters.command, add_schedule)],
+            HOMEWORK_MENU:    [MessageHandler(filters.text & ~filters.command, homework_menu)],
+            ADD_HOMEWORK:     [MessageHandler(filters.text & ~filters.command, add_homework)],
+            NEWS_MENU:        [MessageHandler(filters.text & ~filters.command, news_menu)],
+            ADD_NEWS:         [MessageHandler(filters.text & ~filters.command, add_news)],
+            MATERIALS_MENU:   [MessageHandler(filters.text & ~filters.command, materials_menu)],
+            ADD_MATERIAL:     [MessageHandler(filters.text & ~filters.command, add_material)],
+            CHAT_MENU:        [MessageHandler(filters.text & ~filters.command, chat_menu)],
+            BROADCAST_MSG:    [MessageHandler(filters.text & ~filters.command, broadcast_message)],
+            LINK_PARENT:      [MessageHandler(filters.text & ~filters.command, chat_menu)],
+            ATTENDANCE_MENU:  [MessageHandler(filters.text & ~filters.command, attendance_menu)],
+            TOURNAMENTS_MENU: [MessageHandler(filters.text & ~filters.command, tournaments_menu)],
+            ADD_TOURNAMENT:   [MessageHandler(filters.text & ~filters.command, add_tournament)],
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True
@@ -1377,7 +1377,7 @@ def main():
     dispatcher.add_handler(CallbackQueryHandler(callback_handler))
     updater.job_queue.run_repeating(send_reminders, interval=3600, first=10)
 
-    logger.info("♟️ Chess Trainer Bot v5.3 запущено (python-telegram-bot v20.7)!")
+    logger.info("♟️ Chess Trainer Bot v5.3 запущено (python-telegram-bot v13.15)!")
     updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
