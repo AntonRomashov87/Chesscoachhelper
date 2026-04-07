@@ -1,4 +1,6 @@
+pyTelegramBotAPI
+requests
+beautifulsoup4
 python-telegram-bot==20.7
+flask
 pymongo==4.6.3
-dnspython>=2.6.0
-certifi>=2024.0.0
