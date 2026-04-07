@@ -2,7 +2,6 @@ services:
   - type: web
     name: chess-trainer-bot
     runtime: python
-    pythonVersion: "3.11.9"
     buildCommand: pip install -r requirements.txt
     startCommand: python chess_trainer_bot.py
     envVars:
@@ -12,3 +11,6 @@ services:
         sync: false
       - key: MONGODB_URI
         sync: false
+    env:
+      - key: PYTHON_VERSION
+        value: 3.11.9
