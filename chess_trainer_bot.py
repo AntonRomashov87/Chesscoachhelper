@@ -1,10 +1,11 @@
 """
-♟️ Chess Trainer Bot v5.1 — FIXED & OPTIMIZED FOR RENDER
-НОВЕ: Групові сповіщення + Webhook підтримка
+♟️ Chess Trainer Bot v5.2 — FIXED FOR PYTHON 3.14 + RENDER
+НОВЕ: Async main + Health server
 """
 
 import logging
 import os
+import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from copy import deepcopy
@@ -21,7 +22,7 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 BOT_TOKEN  = os.environ.get("BOT_TOKEN")
 TRAINER_ID = int(os.environ.get("TRAINER_ID", "0"))
-RENDER_URL = os.environ.get("RENDER_URL", "")  # Для webhook на Render
+RENDER_URL = os.environ.get("RENDER_URL", "")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -71,7 +72,6 @@ def col(name):
 # ─────────────────────────────────────────────
 # DB HELPERS
 # ─────────────────────────────────────────────
-
 def db_get_students() -> list:
     return list(col("students").find({}, {"_id": 0}))
 
@@ -194,7 +194,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 def run_health_server():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     logger.info(f"✅ Health server запущено на порту {port}")
     server.serve_forever()
@@ -239,7 +239,7 @@ def is_trainer(update: Update) -> bool:
     return update.effective_user.id == TRAINER_ID
 
 # ─────────────────────────────────────────────
-# КЛАВІАТУРИ — ТРЕНЕР
+# КЛАВІАТУРИ
 # ─────────────────────────────────────────────
 def main_keyboard():
     return ReplyKeyboardMarkup([
@@ -356,7 +356,7 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Помилка в send_reminders: {e}")
 
 # ─────────────────────────────────────────────
-# /start — ВИБІР РОЛІ
+# /start
 # ─────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -420,7 +420,7 @@ async def choose_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CHOOSE_ROLE
 
 # ─────────────────────────────────────────────
-# РЕЄСТРАЦІЯ УЧНЯ ЗА ТЕЛЕФОНОМ
+# РЕЄСТРАЦІЯ УЧНЯ
 # ─────────────────────────────────────────────
 async def register_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -660,7 +660,7 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 # ─────────────────────────────────────────────
-# УЧНІ (ТРЕНЕР)
+# УЧНІ
 # ─────────────────────────────────────────────
 async def students_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_trainer(update): return ConversationHandler.END
@@ -1326,9 +1326,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ Помилка: {str(e)[:50]}")
 
 # ─────────────────────────────────────────────
-# ЗАПУСК
+# ЗАПУСК — ASYNC MAIN ДЛЯ PYTHON 3.14
 # ─────────────────────────────────────────────
-def main():
+async def main():
     try:
         init_mongo()
     except Exception as e:
@@ -1377,8 +1377,9 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.job_queue.run_repeating(send_reminders, interval=3600, first=10)
 
-    logger.info("♟️ Chess Trainer Bot v5.1 запущено!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    logger.info("♟️ Chess Trainer Bot v5.2 запущено!")
+    await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
