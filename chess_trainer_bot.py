@@ -1341,7 +1341,7 @@ def main():
     threading.Thread(target=run_health_server, daemon=True).start()
 
     # ✅ PYTHON-TELEGRAM-BOT v20.7 STYLE
-    updater = Updater(token=BOT_TOKEN)
+    updater = Updater(BOT_TOKEN)
     dispatcher = updater.dispatcher
 
     conv_handler = ConversationHandler(
