@@ -1145,6 +1145,17 @@ def attendance_menu(message):
 # ─────────────────────────────────────────────
 # ЗАПУСК
 # ─────────────────────────────────────────────
+def keep_alive():
+    """Ping себе щоб Free instance не вимикався"""
+    import requests
+    while True:
+        try:
+            time.sleep(300)  # 5 хвилин
+            requests.get("http://localhost:10000", timeout=5)
+            logger.info("♟️ Keep-alive ping")
+        except Exception as e:
+            logger.warning(f"Keep-alive ping помилка: {e}")
+
 def main():
     try:
         init_mongo()
@@ -1158,6 +1169,9 @@ def main():
 
     # ✅ Запускаємо health server в окремому потоці
     threading.Thread(target=run_health_server, daemon=True).start()
+    
+    # ✅ Запускаємо keep-alive ping (щоб Free instance не вимикався)
+    threading.Thread(target=keep_alive, daemon=True).start()
 
     logger.info("♟️ Chess Trainer Bot v5.4 запущено (pyTelegramBotAPI 4.14.0)!")
     bot.polling(none_stop=True)
