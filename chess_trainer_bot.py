@@ -1174,7 +1174,7 @@ def main():
     threading.Thread(target=keep_alive, daemon=True).start()
 
     logger.info("♟️ Chess Trainer Bot v5.4 запущено (pyTelegramBotAPI 4.14.0)!")
-    bot.polling(none_stop=True)
+    bot.polling(none_stop=True, interval=0.1)
 
 
 if __name__ == "__main__":
