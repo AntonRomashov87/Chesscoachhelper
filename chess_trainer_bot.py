@@ -1,5 +1,6 @@
 """
-♟️ Chess Trainer Bot v5.4 — pyTelegramBotAPI 4.14.0 + RENDER
+♟️ Chess Trainer Bot v5.5 — RENDER READY (Fixed)
+Виправлено: Health Server запускається ПЕРШИМ, MongoDB не блокує старт
 """
 
 import logging
@@ -26,142 +27,273 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
-# MONGODB
+# MONGODB (з покращеним підключенням)
 # ─────────────────────────────────────────────
 mongo_client = None
 mdb = None
+db_connected = False  # Прапорець, чи є конект до БД
 
 def init_mongo():
-    global mongo_client, mdb
+    global mongo_client, mdb, db_connected
     uri = os.environ.get("MONGODB_URI")
     logger.info(f"🔗 MONGODB_URI: {'✅ знайдено' if uri else '❌ ПОРОЖНЬО!'}")
     if not uri:
-        raise ValueError("MONGODB_URI не знайдено!")
-    mongo_client = MongoClient(
-        uri,
-        serverSelectionTimeoutMS=5000,
-        tls=True,
-        tlsAllowInvalidCertificates=True
-    )
-    mdb = mongo_client["chess_trainer"]
-    mongo_client.admin.command("ping")
-    logger.info("✅ MongoDB Atlas підключено!")
+        logger.error("❌ MONGODB_URI не знайдено! Бот працюватиме без БД.")
+        db_connected = False
+        return
+    
+    try:
+        mongo_client = MongoClient(
+            uri,
+            serverSelectionTimeoutMS=10000,  # Збільшено до 10 секунд
+            connectTimeoutMS=10000,
+            tls=True,
+            tlsAllowInvalidCertificates=True
+        )
+        mdb = mongo_client["chess_trainer"]
+        mongo_client.admin.command("ping")
+        db_connected = True
+        logger.info("✅ MongoDB Atlas підключено!")
+    except Exception as e:
+        logger.error(f"❌ Помилка підключення до MongoDB: {e}")
+        db_connected = False
 
 def col(name):
+    """Безпечне отримання колекції"""
+    if not db_connected or mdb is None:
+        return None
     return mdb[name]
 
+# Безпечні обгортки для всіх функцій БД
+def safe_db_call(func, default_return):
+    """Виконує функцію БД тільки якщо є конект"""
+    def wrapper(*args, **kwargs):
+        if not db_connected:
+            logger.warning(f"⚠️ Спроба виклику {func.__name__} без підключення до БД")
+            return default_return
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"❌ Помилка БД у {func.__name__}: {e}")
+            return default_return
+    return wrapper
+
 # ─────────────────────────────────────────────
-# DB HELPERS
+# DB HELPERS (з обгортками безпеки)
 # ─────────────────────────────────────────────
 def db_get_students() -> list:
-    return list(col("students").find({}, {"_id": 0}))
+    if not db_connected: return []
+    try:
+        return list(col("students").find({}, {"_id": 0}))
+    except:
+        return []
 
 def db_add_student(student: dict):
-    col("students").insert_one(deepcopy(student))
+    if not db_connected: return
+    try:
+        col("students").insert_one(deepcopy(student))
+    except Exception as e:
+        logger.error(f"Помилка додавання учня: {e}")
 
 def db_delete_student(name: str):
-    col("students").delete_one({"name": name})
+    if not db_connected: return
+    try:
+        col("students").delete_one({"name": name})
+    except:
+        pass
 
 def db_find_student_by_phone(phone: str):
-    return col("students").find_one({"student_phone": phone}, {"_id": 0})
+    if not db_connected: return None
+    try:
+        return col("students").find_one({"student_phone": phone}, {"_id": 0})
+    except:
+        return None
 
 def db_get_schedule() -> list:
-    return list(col("schedule").find({}, {"_id": 0}))
+    if not db_connected: return []
+    try:
+        return list(col("schedule").find({}, {"_id": 0}))
+    except:
+        return []
 
 def db_add_schedule(entry: dict):
-    col("schedule").insert_one(deepcopy(entry))
+    if not db_connected: return
+    try:
+        col("schedule").insert_one(deepcopy(entry))
+    except:
+        pass
 
 def db_delete_schedule(day: str, time: str, group: str):
-    col("schedule").delete_one({"day": day, "time": time, "group": group})
+    if not db_connected: return
+    try:
+        col("schedule").delete_one({"day": day, "time": time, "group": group})
+    except:
+        pass
 
 def db_get_homework() -> list:
-    return list(col("homework").find({}, {"_id": 0}))
+    if not db_connected: return []
+    try:
+        return list(col("homework").find({}, {"_id": 0}))
+    except:
+        return []
 
 def db_add_homework(hw: dict):
-    col("homework").insert_one(deepcopy(hw))
+    if not db_connected: return
+    try:
+        col("homework").insert_one(deepcopy(hw))
+    except:
+        pass
 
 def db_delete_homework(group: str, task: str):
-    col("homework").delete_one({"group": group, "task": task})
+    if not db_connected: return
+    try:
+        col("homework").delete_one({"group": group, "task": task})
+    except:
+        pass
 
 def db_get_news() -> list:
-    return list(col("news").find({}, {"_id": 0}))
+    if not db_connected: return []
+    try:
+        return list(col("news").find({}, {"_id": 0}))
+    except:
+        return []
 
 def db_add_news(item: dict):
-    col("news").insert_one(deepcopy(item))
+    if not db_connected: return
+    try:
+        col("news").insert_one(deepcopy(item))
+    except:
+        pass
 
 def db_delete_news(title: str, date: str):
-    col("news").delete_one({"title": title, "date": date})
+    if not db_connected: return
+    try:
+        col("news").delete_one({"title": title, "date": date})
+    except:
+        pass
 
 def db_get_materials() -> list:
-    return list(col("materials").find({}, {"_id": 0}))
+    if not db_connected: return []
+    try:
+        return list(col("materials").find({}, {"_id": 0}))
+    except:
+        return []
 
 def db_add_material(mat: dict):
-    col("materials").insert_one(deepcopy(mat))
+    if not db_connected: return
+    try:
+        col("materials").insert_one(deepcopy(mat))
+    except:
+        pass
 
 def db_delete_material(title: str, link: str):
-    col("materials").delete_one({"title": title, "link": link})
+    if not db_connected: return
+    try:
+        col("materials").delete_one({"title": title, "link": link})
+    except:
+        pass
 
 def db_get_tournaments() -> list:
-    return list(col("tournaments").find({}, {"_id": 0}))
+    if not db_connected: return []
+    try:
+        return list(col("tournaments").find({}, {"_id": 0}))
+    except:
+        return []
 
 def db_add_tournament(t: dict):
-    col("tournaments").insert_one(deepcopy(t))
+    if not db_connected: return
+    try:
+        col("tournaments").insert_one(deepcopy(t))
+    except:
+        pass
 
 def db_delete_tournament(title: str, date: str):
-    col("tournaments").delete_one({"title": title, "date": date})
+    if not db_connected: return
+    try:
+        col("tournaments").delete_one({"title": title, "date": date})
+    except:
+        pass
 
 def db_get_parents() -> dict:
-    result = {}
-    for p in col("parents").find({}, {"_id": 0}):
-        result[p["pid"]] = {
-            "name": p["name"],
-            "student": p.get("student", ""),
-            "group": p.get("group", ""),
-            "rank": p.get("rank", ""),
-        }
-    return result
+    if not db_connected: return {}
+    try:
+        result = {}
+        for p in col("parents").find({}, {"_id": 0}):
+            result[p["pid"]] = {
+                "name": p["name"],
+                "student": p.get("student", ""),
+                "group": p.get("group", ""),
+                "rank": p.get("rank", ""),
+            }
+        return result
+    except:
+        return {}
 
 def db_upsert_parent(pid: str, name: str, student: str = "", group: str = "", rank: str = ""):
-    col("parents").update_one(
-        {"pid": pid},
-        {"$set": {"pid": pid, "name": name, "student": student, "group": group, "rank": rank}},
-        upsert=True
-    )
+    if not db_connected: return
+    try:
+        col("parents").update_one(
+            {"pid": pid},
+            {"$set": {"pid": pid, "name": name, "student": student, "group": group, "rank": rank}},
+            upsert=True
+        )
+    except:
+        pass
 
 def db_link_parent_to_student(pid: str, student_name: str, group: str, rank: str):
-    col("parents").update_one(
-        {"pid": pid},
-        {"$set": {"student": student_name, "group": group, "rank": rank}}
-    )
+    if not db_connected: return
+    try:
+        col("parents").update_one(
+            {"pid": pid},
+            {"$set": {"student": student_name, "group": group, "rank": rank}}
+        )
+    except:
+        pass
 
 def db_get_student_users() -> dict:
-    result = {}
-    for s in col("student_users").find({}, {"_id": 0}):
-        result[s["uid"]] = {
-            "name": s["name"],
-            "student_name": s.get("student_name", ""),
-            "group": s.get("group", ""),
-            "rank": s.get("rank", ""),
-        }
-    return result
+    if not db_connected: return {}
+    try:
+        result = {}
+        for s in col("student_users").find({}, {"_id": 0}):
+            result[s["uid"]] = {
+                "name": s["name"],
+                "student_name": s.get("student_name", ""),
+                "group": s.get("group", ""),
+                "rank": s.get("rank", ""),
+            }
+        return result
+    except:
+        return {}
 
 def db_upsert_student_user(uid: str, name: str, student_name: str = "", group: str = "", rank: str = ""):
-    col("student_users").update_one(
-        {"uid": uid},
-        {"$set": {"uid": uid, "name": name, "student_name": student_name, "group": group, "rank": rank}},
-        upsert=True
-    )
+    if not db_connected: return
+    try:
+        col("student_users").update_one(
+            {"uid": uid},
+            {"$set": {"uid": uid, "name": name, "student_name": student_name, "group": group, "rank": rank}},
+            upsert=True
+        )
+    except:
+        pass
 
 def db_get_attendance() -> dict:
-    result = {}
-    for a in col("attendance").find({}, {"_id": 0}):
-        result[a["key"]] = a
-    return result
+    if not db_connected: return {}
+    try:
+        result = {}
+        for a in col("attendance").find({}, {"_id": 0}):
+            result[a["key"]] = a
+        return result
+    except:
+        return {}
 
 def db_save_attendance(key: str, record: dict):
-    data = deepcopy(record)
-    data["key"] = key
-    col("attendance").update_one({"key": key}, {"$set": data}, upsert=True)
+    if not db_connected: return
+    try:
+        data = deepcopy(record)
+        data["key"] = key
+        col("attendance").update_one({"key": key}, {"$set": data}, upsert=True)
+    except:
+        pass
 
 # ─────────────────────────────────────────────
 # HEALTH SERVER ДЛЯ RENDER
@@ -193,12 +325,16 @@ def group_matches(user_group: str, user_rank: str, target_group: str) -> bool:
             target_lower in user_rank.lower())
 
 def notify_group(bot, target_group: str, text: str):
+    if not db_connected:
+        logger.warning("⚠️ Розсилка неможлива: немає підключення до БД")
+        return 0
     sent = 0
     for pid, info in db_get_parents().items():
         if group_matches(info.get("group", ""), info.get("rank", ""), target_group):
             try:
                 bot.send_message(chat_id=int(pid), text=text)
                 sent += 1
+                time.sleep(0.05)  # Захист від флуду
             except Exception as e:
                 logger.error(f"Помилка при надіслані батькові {pid}: {e}")
     for uid, info in db_get_student_users().items():
@@ -206,6 +342,7 @@ def notify_group(bot, target_group: str, text: str):
             try:
                 bot.send_message(chat_id=int(uid), text=text)
                 sent += 1
+                time.sleep(0.05)  # Захист від флуду
             except Exception as e:
                 logger.error(f"Помилка при надіслані учню {uid}: {e}")
     return sent
@@ -305,10 +442,20 @@ def role_keyboard():
 # ─────────────────────────────────────────────
 # BOT INSTANCE
 # ─────────────────────────────────────────────
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)  # threaded=False для стабільності на Render
 
 # Зберігаємо стан користувача
 user_states = {}
+
+# ─────────────────────────────────────────────
+# ДЕКОРАТОР ДЛЯ ПЕРЕВІРКИ БД
+# ─────────────────────────────────────────────
+def check_db_connection(message):
+    """Перевіряє підключення до БД перед виконанням дій"""
+    if not db_connected:
+        bot.reply_to(message, "⚠️ База даних тимчасово недоступна. Спробуйте пізніше.")
+        return False
+    return True
 
 # ─────────────────────────────────────────────
 # /start
@@ -325,6 +472,15 @@ def start(message):
             reply_markup=main_keyboard()
         )
         user_states[user_id] = "main_menu"
+        return
+
+    if not db_connected:
+        bot.send_message(
+            user_id,
+            f"👋 Вітаємо, {user.first_name}!\n\n"
+            "⚠️ База даних тимчасово недоступна. Будь ласка, спробуйте пізніше.",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
         return
 
     if str(user_id) in db_get_student_users():
@@ -373,7 +529,8 @@ def choose_role(message):
         user_states[user_id] = "register_student"
 
     elif text == "👨‍👩‍👦 Я батько/мати":
-        db_upsert_parent(str(user_id), message.from_user.full_name)
+        if db_connected:
+            db_upsert_parent(str(user_id), message.from_user.full_name)
         bot.send_message(
             user_id,
             "✅ Ви зареєстровані як батько/мати!\n\n"
@@ -394,6 +551,10 @@ def register_student(message):
     if text == "⬅️ Назад":
         bot.send_message(user_id, "Оберіть роль:", reply_markup=role_keyboard())
         user_states[user_id] = "choose_role"
+        return
+
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна. Спробуйте пізніше.")
         return
 
     student = db_find_student_by_phone(text)
@@ -434,6 +595,10 @@ def student_menu_handler(message):
         if is_trainer(user_id):
             bot.send_message(user_id, "Меню тренера:", reply_markup=main_keyboard())
             user_states[user_id] = "main_menu"
+        return
+
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=student_keyboard())
         return
 
     uid = str(user_id)
@@ -525,6 +690,10 @@ def parent_menu_handler(message):
             user_states[user_id] = "main_menu"
         return
 
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=parent_keyboard())
+        return
+
     user_id_str = str(user_id)
     parent_info = db_get_parents().get(user_id_str, {})
     parent_group = parent_info.get("group", "")
@@ -601,6 +770,9 @@ def parent_menu_handler(message):
 def main_menu_handler(message):
     user_id = message.from_user.id
     if not is_trainer(user_id):
+        if not db_connected:
+            bot.send_message(user_id, "⚠️ База даних недоступна.")
+            return
         uid = str(user_id)
         if uid in db_get_student_users():
             bot.send_message(user_id, "Ваше меню:", reply_markup=student_keyboard())
@@ -627,9 +799,10 @@ def main_menu_handler(message):
         bot.send_message(user_id, "🎓 Навчальні матеріали:", reply_markup=materials_keyboard())
         user_states[user_id] = "materials_menu"
     elif text == "💬 Чат з батьками":
+        parents_count = len(db_get_parents()) if db_connected else 0
         bot.send_message(
             user_id,
-            f"💬 Комунікація з батьками\n👥 Зареєстровано батьків: {len(db_get_parents())}",
+            f"💬 Комунікація з батьками\n👥 Зареєстровано батьків: {parents_count}",
             reply_markup=chat_keyboard()
         )
         user_states[user_id] = "chat_menu"
@@ -648,6 +821,11 @@ def students_menu(message):
     user_id = message.from_user.id
     text = message.text
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=main_keyboard())
+        user_states[user_id] = "main_menu"
+        return
+
     if text == "⬅️ Головне меню":
         bot.send_message(user_id, "Головне меню:", reply_markup=main_keyboard())
         user_states[user_id] = "main_menu"
@@ -683,6 +861,11 @@ def add_student(message):
         user_states[user_id] = "main_menu"
         return
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=students_keyboard())
+        user_states[user_id] = "students_menu"
+        return
+
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 4:
@@ -721,6 +904,11 @@ def schedule_menu(message):
     user_id = message.from_user.id
     text = message.text
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=main_keyboard())
+        user_states[user_id] = "main_menu"
+        return
+
     if text == "⬅️ Головне меню":
         bot.send_message(user_id, "Головне меню:", reply_markup=main_keyboard())
         user_states[user_id] = "main_menu"
@@ -754,6 +942,11 @@ def add_schedule(message):
         user_states[user_id] = "main_menu"
         return
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=schedule_keyboard())
+        user_states[user_id] = "schedule_menu"
+        return
+
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 4:
@@ -789,6 +982,11 @@ def homework_menu(message):
     user_id = message.from_user.id
     text = message.text
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=main_keyboard())
+        user_states[user_id] = "main_menu"
+        return
+
     if text == "⬅️ Головне меню":
         bot.send_message(user_id, "Головне меню:", reply_markup=main_keyboard())
         user_states[user_id] = "main_menu"
@@ -821,6 +1019,11 @@ def add_homework(message):
         user_states[user_id] = "main_menu"
         return
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=homework_keyboard())
+        user_states[user_id] = "homework_menu"
+        return
+
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 3:
@@ -855,6 +1058,11 @@ def news_menu(message):
     user_id = message.from_user.id
     text = message.text
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=main_keyboard())
+        user_states[user_id] = "main_menu"
+        return
+
     if text == "⬅️ Головне меню":
         bot.send_message(user_id, "Головне меню:", reply_markup=main_keyboard())
         user_states[user_id] = "main_menu"
@@ -887,6 +1095,11 @@ def add_news(message):
         user_states[user_id] = "main_menu"
         return
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=news_keyboard())
+        user_states[user_id] = "news_menu"
+        return
+
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 2:
@@ -917,6 +1130,11 @@ def materials_menu(message):
     user_id = message.from_user.id
     text = message.text
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=main_keyboard())
+        user_states[user_id] = "main_menu"
+        return
+
     if text == "⬅️ Головне меню":
         bot.send_message(user_id, "Головне меню:", reply_markup=main_keyboard())
         user_states[user_id] = "main_menu"
@@ -949,6 +1167,11 @@ def add_material(message):
         user_states[user_id] = "main_menu"
         return
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=materials_keyboard())
+        user_states[user_id] = "materials_menu"
+        return
+
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 3:
@@ -974,6 +1197,11 @@ def tournaments_menu(message):
     user_id = message.from_user.id
     text = message.text
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=main_keyboard())
+        user_states[user_id] = "main_menu"
+        return
+
     if text == "⬅️ Головне меню":
         bot.send_message(user_id, "Головне меню:", reply_markup=main_keyboard())
         user_states[user_id] = "main_menu"
@@ -1009,6 +1237,11 @@ def add_tournament(message):
         user_states[user_id] = "main_menu"
         return
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=tournaments_keyboard())
+        user_states[user_id] = "tournaments_menu"
+        return
+
     try:
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 5:
@@ -1046,6 +1279,9 @@ def chat_menu(message):
         bot.send_message(user_id, "Головне меню:", reply_markup=main_keyboard())
         user_states[user_id] = "main_menu"
     elif text == "👥 Список батьків":
+        if not db_connected:
+            bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=chat_keyboard())
+            return
         parents = db_get_parents()
         if not parents:
             bot.send_message(user_id, "📭 Жоден батько ще не зареєструвався.", reply_markup=chat_keyboard())
@@ -1069,11 +1305,17 @@ def broadcast_message(message):
         user_states[user_id] = "main_menu"
         return
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=chat_keyboard())
+        user_states[user_id] = "chat_menu"
+        return
+
     sent = failed = 0
     for pid in db_get_parents():
         try:
             bot.send_message(chat_id=int(pid), text=f"📣 Від тренера:\n\n{text}")
             sent += 1
+            time.sleep(0.05)  # Захист від флуду
         except Exception:
             failed += 1
     
@@ -1092,6 +1334,11 @@ def attendance_menu(message):
     user_id = message.from_user.id
     text = message.text
     
+    if not db_connected:
+        bot.send_message(user_id, "⚠️ База даних недоступна.", reply_markup=main_keyboard())
+        user_states[user_id] = "main_menu"
+        return
+
     if text == "⬅️ Головне меню":
         bot.send_message(user_id, "Головне меню:", reply_markup=main_keyboard())
         user_states[user_id] = "main_menu"
@@ -1143,24 +1390,46 @@ def attendance_menu(message):
         bot.send_message(user_id, msg, reply_markup=attendance_keyboard())
 
 # ─────────────────────────────────────────────
-# ЗАПУСК
+# ГОЛОВНА ФУНКЦІЯ ЗАПУСКУ (ВИПРАВЛЕНА ДЛЯ RENDER)
 # ─────────────────────────────────────────────
 def main():
+    logger.info("♟️ Запуск Chess Trainer Bot на Render...")
+    
+    # 1. СПОЧАТКУ ЗАПУСКАЄМО HEALTH SERVER (Render цього чекає)
+    try:
+        port = int(os.environ.get("PORT", 10000))
+        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        logger.info(f"✅ Health Server запущено на порту {port}")
+        time.sleep(2)  # Даємо час Render'у побачити, що порт відкрито
+    except Exception as e:
+        logger.error(f"❌ Помилка запуску Health Server: {e}")
+    
+    # 2. ПІДКЛЮЧАЄМОСЯ ДО MONGODB (не блокує запуск)
     try:
         init_mongo()
     except Exception as e:
-        logger.error(f"❌ КРИТИЧНА ПОМИЛКА MongoDB: {e}")
-        return
-
+        logger.error(f"❌ Помилка підключення до MongoDB: {e}")
+        logger.warning("⚠️ Бот продовжить роботу, але функції БД будуть недоступні")
+    
+    # 3. ПЕРЕВІРЯЄМО ТОКЕН
     if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN не знайдено!")
+        logger.error("❌ BOT_TOKEN не знайдено! Бот не може працювати.")
         return
-
-    # ✅ Запускаємо health server в окремому потоці
-    threading.Thread(target=run_health_server, daemon=True).start()
-
-    logger.info("♟️ Chess Trainer Bot v5.4 запущено (pyTelegramBotAPI 4.14.0)!")
-    bot.polling(none_stop=True, interval=0.1)
+    
+    logger.info(f"✅ Тренер ID: {TRAINER_ID}")
+    logger.info("♟️ Chess Trainer Bot v5.5 RENDER READY запущено!")
+    
+    # 4. ЗАПУСКАЄМО БОТА З АВТОПЕРЕЗАПУСКОМ
+    while True:
+        try:
+            logger.info("🔄 Запуск polling...")
+            bot.polling(none_stop=True, interval=0.5, timeout=30)
+        except Exception as e:
+            logger.error(f"❌ Помилка polling: {e}")
+            logger.info("⏳ Перезапуск через 10 секунд...")
+            time.sleep(10)
 
 
 if __name__ == "__main__":
