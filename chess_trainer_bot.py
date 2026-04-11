@@ -300,9 +300,26 @@ def db_save_attendance(key: str, record: dict):
 # ─────────────────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        try:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            
+            status_text = f"""<html><body>
+            <h1>♟️ Chess Trainer Bot</h1>
+            <p>Status: <span style="color:green;"><b>ALIVE</b></span></p>
+            <p>DB: {'✅ Connected' if db_connected else '❌ Disconnected'}</p>
+            <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            </body></html>"""
+            
+            self.wfile.write(status_text.encode('utf-8'))
+        except Exception as e:
+            logger.error(f"Health check error: {e}")
+            
+    def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"OK")
+        
     def log_message(self, format, *args):
         pass
 
